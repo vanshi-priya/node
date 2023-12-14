@@ -141,7 +141,7 @@ class TestSetup {
 
 }  // namespace
 
-i::AbstractCode CreateCode(i::Isolate* isolate, LocalContext* env) {
+i::Tagged<i::AbstractCode> CreateCode(i::Isolate* isolate, LocalContext* env) {
   static int counter = 0;
   base::EmbeddedVector<char, 256> script;
   base::EmbeddedVector<char, 32> name;
@@ -189,7 +189,7 @@ TEST(CodeEvents) {
   ProfilerListener profiler_listener(isolate, processor,
                                      *code_observer.code_entries(),
                                      *code_observer.weak_code_registry());
-  isolate->v8_file_logger()->AddLogEventListener(&profiler_listener);
+  CHECK(isolate->logger()->AddListener(&profiler_listener));
 
   // Enqueue code creation events.
   const char* aaa_str = "aaa";
@@ -214,7 +214,7 @@ TEST(CodeEvents) {
   // Enqueue a tick event to enable code events processing.
   EnqueueTickSampleEvent(processor, aaa_code->InstructionStart(cage_base));
 
-  isolate->v8_file_logger()->RemoveLogEventListener(&profiler_listener);
+  CHECK(isolate->logger()->RemoveListener(&profiler_listener));
   processor->StopSynchronously();
 
   // Check the state of the symbolizer.
@@ -268,7 +268,7 @@ TEST(TickEvents) {
   ProfilerListener profiler_listener(isolate, processor,
                                      *code_observer->code_entries(),
                                      *code_observer->weak_code_registry());
-  isolate->v8_file_logger()->AddLogEventListener(&profiler_listener);
+  CHECK(isolate->logger()->AddListener(&profiler_listener));
 
   profiler_listener.CodeCreateEvent(i::LogEventListener::CodeTag::kBuiltin,
                                     frame1_code, "bbb");
@@ -288,7 +288,7 @@ TEST(TickEvents) {
                          frame2_code->InstructionEnd(cage_base) - 1,
                          frame1_code->InstructionEnd(cage_base) - 1);
 
-  isolate->v8_file_logger()->RemoveLogEventListener(&profiler_listener);
+  CHECK(isolate->logger()->RemoveListener(&profiler_listener));
   processor->StopSynchronously();
   CpuProfile* profile = profiles->StopProfiling(id);
   CHECK(profile);
@@ -1312,10 +1312,10 @@ static void TickLines(bool optimize) {
       v8::Utils::OpenHandle(*GetFunction(env.local(), func_name)));
   CHECK(!func->shared().is_null());
   CHECK(!func->shared()->abstract_code(isolate).is_null());
-  CHECK(!optimize || func->HasAttachedOptimizedCode() ||
-        !CcTest::i_isolate()->use_optimizer());
+  CHECK(!optimize || func->HasAttachedOptimizedCode(isolate) ||
+        !isolate->use_optimizer());
   i::Handle<i::AbstractCode> code(func->abstract_code(isolate), isolate);
-  CHECK(!code->is_null());
+  CHECK(!(*code).is_null());
   i::Address code_address = code->InstructionStart(isolate);
   CHECK_NE(code_address, kNullAddress);
 
@@ -4323,8 +4323,8 @@ int GetSourcePositionEntryCount(i::Isolate* isolate, const char* source,
   std::unordered_set<int64_t> raw_position_set;
   i::Handle<i::JSFunction> function = i::Handle<i::JSFunction>::cast(
       v8::Utils::OpenHandle(*CompileRun(source)));
-  if (function->ActiveTierIsIgnition()) return -1;
-  i::Handle<i::Code> code(function->code(), isolate);
+  if (function->ActiveTierIsIgnition(isolate)) return -1;
+  i::Handle<i::Code> code(function->code(isolate), isolate);
   i::SourcePositionTableIterator iterator(
       ByteArray::cast(code->source_position_table()));
 
@@ -4573,10 +4573,10 @@ TEST(NoProfilingProtectorCPUProfiler) {
   Handle<JSFunction> i_function =
       Handle<JSFunction>::cast(v8::Utils::OpenHandle(*function));
 
-  CHECK(!i_function->code()->is_optimized_code());
+  CHECK(!i_function->code(i_isolate)->is_optimized_code());
   CompileRun("foo(42);");
 
-  Handle<Code> code(i_function->code(), i_isolate);
+  Handle<Code> code(i_function->code(i_isolate), i_isolate);
   CHECK(code->is_optimized_code());
   CHECK(!code->marked_for_deoptimization());
   CHECK(Protectors::IsNoProfilingIntact(i_isolate));
@@ -4748,9 +4748,9 @@ TEST(BytecodeFlushEventsEagerLogging) {
   v8_flags.always_turbofan = false;
   v8_flags.optimize_for_size = false;
 #endif  // !defined(V8_LITE_MODE) && defined(V8_ENABLE_TURBOFAN)
-#if ENABLE_SPARKPLUG
+#ifdef V8_ENABLE_SPARKPLUG
   v8_flags.always_sparkplug = false;
-#endif  // ENABLE_SPARKPLUG
+#endif  // V8_ENABLE_SPARKPLUG
   v8_flags.flush_bytecode = true;
   v8_flags.allow_natives_syntax = true;
 
@@ -4793,7 +4793,7 @@ TEST(BytecodeFlushEventsEagerLogging) {
     Handle<JSFunction> function = Handle<JSFunction>::cast(func_value);
     CHECK(function->shared()->is_compiled());
 
-    i::BytecodeArray compiled_data =
+    Tagged<BytecodeArray> compiled_data =
         function->shared()->GetBytecodeArray(i_isolate);
     i::Address bytecode_start = compiled_data->GetFirstBytecodeAddress();
 
@@ -4809,7 +4809,7 @@ TEST(BytecodeFlushEventsEagerLogging) {
 
     // foo should no longer be in the compilation cache
     CHECK(!function->shared()->is_compiled());
-    CHECK(!function->is_compiled());
+    CHECK(!function->is_compiled(i_isolate));
 
     CHECK(!instruction_stream_map->FindEntry(bytecode_start));
   }

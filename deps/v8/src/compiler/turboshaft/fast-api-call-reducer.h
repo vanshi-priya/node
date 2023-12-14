@@ -8,9 +8,9 @@
 #include "include/v8-fast-api-calls.h"
 #include "src/compiler/fast-api-calls.h"
 #include "src/compiler/turboshaft/assembler.h"
+#include "src/compiler/turboshaft/copying-phase.h"
 #include "src/compiler/turboshaft/index.h"
 #include "src/compiler/turboshaft/operations.h"
-#include "src/compiler/turboshaft/optimization-phase.h"
 #include "src/compiler/turboshaft/phase.h"
 #include "src/compiler/turboshaft/representations.h"
 
@@ -124,8 +124,8 @@ class FastApiCallReducer : public Next {
     GOTO(done, FastApiCallOp::kSuccessValue, fast_call_result);
 
     if (BIND(handle_error)) {
-      // We pass Smi(0) as the value here, although this should never be visible
-      // when calling code reacts to `kFailureValue` properly.
+      // We pass Tagged<Smi>(0) as the value here, although this should never be
+      // visible when calling code reacts to `kFailureValue` properly.
       GOTO(done, FastApiCallOp::kFailureValue, __ TagSmi(0));
     }
 

@@ -31,7 +31,7 @@ This a list of all the dependencies:
 * [simdutf 4.0.4][]
 * [undici 5.28.2][]
 * [uvwasi 0.0.19][]
-* [V8 11.8.172.12][]
+* [V8 12.2.88][]
 * [zlib 1.3-22124f5][]
 
 Any code which meets one or more of these conditions should
@@ -311,7 +311,7 @@ implement WASI calls.
 Under the hood, uvwasi leverages libuv where possible for maximum portability.
 See [maintaining-web-assembly][] for more informations.
 
-### V8 11.8.172.12
+### V8 12.2.88
 
 [V8](https://chromium.googlesource.com/v8/v8.git/) is Google's open source
 high-performance JavaScript and WebAssembly engine, written in C++.
@@ -355,5 +355,5 @@ performance improvements not currently available in standard zlib.
 [undici 5.28.2]: #undici-5282
 [update-openssl-action]: ../../../.github/workflows/update-openssl.yml
 [uvwasi 0.0.19]: #uvwasi-0019
-[v8 11.8.172.12]: #v8-11817212
+[v8 12.2.88]: #v8-12288
 [zlib 1.3-22124f5]: #zlib-13-22124f5

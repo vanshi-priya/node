@@ -16,6 +16,7 @@
 #include "src/objects/objects.h"
 
 #if V8_ENABLE_WEBASSEMBLY
+#include "src/wasm/stacks.h"
 #include "src/wasm/wasm-code-manager.h"
 #endif  // V8_ENABLE_WEBASSEMBLY
 
@@ -700,7 +701,8 @@ class JavaScriptFrame : public CommonFrameWithJSLinkage {
              int index) const override;
 
   // Return a list with {SharedFunctionInfo} objects of this frame.
-  virtual void GetFunctions(std::vector<SharedFunctionInfo>* functions) const;
+  virtual void GetFunctions(
+      std::vector<Tagged<SharedFunctionInfo>>* functions) const;
 
   void GetFunctions(std::vector<Handle<SharedFunctionInfo>>* functions) const;
 
@@ -721,7 +723,8 @@ class JavaScriptFrame : public CommonFrameWithJSLinkage {
   static void PrintTop(Isolate* isolate, FILE* file, bool print_args,
                        bool print_line_number);
 
-  static void CollectFunctionAndOffsetForICStats(Tagged<JSFunction> function,
+  static void CollectFunctionAndOffsetForICStats(IsolateForSandbox isolate,
+                                                 Tagged<JSFunction> function,
                                                  Tagged<AbstractCode> code,
                                                  int code_offset);
 
@@ -942,7 +945,8 @@ class OptimizedFrame : public JavaScriptFrame {
   // Return a list with {SharedFunctionInfo} objects of this frame.
   // The functions are ordered bottom-to-top (i.e. functions.last()
   // is the top-most activation)
-  void GetFunctions(std::vector<SharedFunctionInfo>* functions) const override;
+  void GetFunctions(
+      std::vector<Tagged<SharedFunctionInfo>>* functions) const override;
 
   void Summarize(std::vector<FrameSummary>* frames) const override;
 
@@ -981,6 +985,8 @@ class UnoptimizedFrame : public JavaScriptFrame {
 
   // Access to the interpreter register file for this frame.
   Tagged<Object> ReadInterpreterRegister(int register_index) const;
+
+  inline void SetFeedbackVector(Tagged<FeedbackVector> feedback_vector);
 
   // Build a list with summaries for this frame including all inlined frames.
   void Summarize(std::vector<FrameSummary>* frames) const override;
@@ -1594,6 +1600,16 @@ class StackFrameIteratorForProfiler : public StackFrameIteratorBase {
   void AdvanceOneFrame();
 
   bool IsValidStackAddress(Address addr) const {
+#if V8_ENABLE_WEBASSEMBLY
+    if (V8_UNLIKELY(v8_flags.experimental_wasm_stack_switching)) {
+      wasm::StackMemory* head = wasm_stacks_;
+      if (head->Contains(addr)) return true;
+      for (wasm::StackMemory* current = head->next(); current != head;
+           current = current->next()) {
+        if (current->Contains(addr)) return true;
+      }
+    }
+#endif
     return low_bound_ <= addr && addr <= high_bound_;
   }
   bool IsValidFrame(StackFrame* frame) const;
@@ -1615,6 +1631,9 @@ class StackFrameIteratorForProfiler : public StackFrameIteratorBase {
   StackFrame::Type top_frame_type_;
   ExternalCallbackScope* external_callback_scope_;
   Address top_link_register_;
+#if V8_ENABLE_WEBASSEMBLY
+  wasm::StackMemory* wasm_stacks_;
+#endif
 };
 
 // We cannot export 'StackFrameIteratorForProfiler' for cctests since the

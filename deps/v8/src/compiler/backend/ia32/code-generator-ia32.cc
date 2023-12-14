@@ -21,7 +21,6 @@
 #include "src/objects/smi.h"
 
 #if V8_ENABLE_WEBASSEMBLY
-#include "src/wasm/wasm-code-manager.h"
 #include "src/wasm/wasm-objects.h"
 #endif  // V8_ENABLE_WEBASSEMBLY
 
@@ -272,10 +271,11 @@ class OutOfLineTruncateDoubleToI final : public OutOfLineCode {
     __ Movsd(MemOperand(esp, 0), input_);
 #if V8_ENABLE_WEBASSEMBLY
     if (stub_mode_ == StubCallMode::kCallWasmRuntimeStub) {
-      // A direct call to a wasm runtime stub defined in this module.
-      // Just encode the stub index. This will be patched when the code
-      // is added to the native module and copied into wasm code space.
-      __ wasm_call(wasm::WasmCode::kDoubleToI, RelocInfo::WASM_STUB_CALL);
+      // A direct call to a builtin. Just encode the builtin index. This will be
+      // patched when the code is added to the native module and copied into
+      // wasm code space.
+      __ wasm_call(static_cast<Address>(Builtin::kDoubleToI),
+                   RelocInfo::WASM_STUB_CALL);
 #else
     // For balance.
     if (false) {
@@ -669,8 +669,7 @@ void CodeGenerator::BailoutIfDeoptimized() {
 
   Label skip;
   __ j(zero, &skip, Label::kNear);
-  __ Jump(BUILTIN_CODE(isolate(), CompileLazyDeoptimizedCode),
-          RelocInfo::CODE_TARGET);
+  __ TailCallBuiltin(Builtin::kCompileLazyDeoptimizedCode);
   __ bind(&skip);
 }
 
@@ -880,8 +879,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         // We don't actually want to generate a pile of code for this, so just
         // claim there is a stack frame, without generating one.
         FrameScope scope(masm(), StackFrame::NO_FRAME_TYPE);
-        __ Call(isolate()->builtins()->code_handle(Builtin::kAbortCSADcheck),
-                RelocInfo::CODE_TARGET);
+        __ CallBuiltin(Builtin::kAbortCSADcheck);
       }
       __ int3();
       break;
@@ -911,6 +909,18 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ mov(i.OutputRegister(), ebp);
       }
       break;
+#if V8_ENABLE_WEBASSEMBLY
+    case kArchStackPointer:
+      __ mov(i.OutputRegister(), esp);
+      break;
+    case kArchSetStackPointer:
+      if (instr->InputAt(0)->IsRegister()) {
+        __ mov(esp, i.InputRegister(0));
+      } else {
+        __ mov(esp, i.InputOperand(0));
+      }
+      break;
+#endif
     case kArchStackPointerGreaterThan: {
       // Potentially apply an offset to the current stack pointer before the
       // comparison to consider the size difference of an optimized frame versus
@@ -3479,9 +3489,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kIA32I32x4TruncF64x2UZero: {
-      __ I32x4TruncF64x2UZero(i.OutputSimd128Register(),
-                              i.InputSimd128Register(0), i.TempRegister(0),
-                              kScratchDoubleReg);
+      __ I32x4TruncSatF64x2UZero(i.OutputSimd128Register(),
+                                 i.InputSimd128Register(0), kScratchDoubleReg,
+                                 i.TempRegister(0));
       break;
     }
     case kIA32I32x4TruncF32x4U: {
@@ -4030,7 +4040,17 @@ void CodeGenerator::AssembleConstructFrame() {
         // accessors.
         __ push(kWasmInstanceRegister);
       }
-      if (call_descriptor->IsWasmCapiFunction()) {
+      if (call_descriptor->IsWasmImportWrapper()) {
+        // If the wrapper is running on a secondary stack, it will switch to the
+        // central stack and fill these slots with the central stack pointer and
+        // secondary stack limit. Otherwise the slots remain empty.
+        static_assert(WasmImportWrapperFrameConstants::kCentralStackSPOffset ==
+                      -12);
+        static_assert(
+            WasmImportWrapperFrameConstants::kSecondaryStackLimitOffset == -16);
+        __ push(Immediate(0));
+        __ push(Immediate(0));
+      } else if (call_descriptor->IsWasmCapiFunction()) {
         // Reserve space for saving the PC later.
         __ AllocateStackSpace(kSystemPointerSize);
       }
@@ -4071,17 +4091,14 @@ void CodeGenerator::AssembleConstructFrame() {
       if (required_slots * kSystemPointerSize < v8_flags.stack_size * KB) {
         Register scratch = esi;
         __ push(scratch);
-        __ mov(scratch,
-               FieldOperand(kWasmInstanceRegister,
-                            WasmInstanceObject::kRealStackLimitAddressOffset));
-        __ mov(scratch, Operand(scratch, 0));
-        __ add(scratch, Immediate(required_slots * kSystemPointerSize));
-        __ cmp(esp, scratch);
+        __ mov(scratch, esp);
+        __ sub(scratch, Immediate(required_slots * kSystemPointerSize));
+        __ CompareStackLimit(scratch, StackLimitKind::kRealStackLimit);
         __ pop(scratch);
         __ j(above_equal, &done, Label::kNear);
       }
 
-      __ wasm_call(wasm::WasmCode::kWasmStackOverflow,
+      __ wasm_call(static_cast<Address>(Builtin::kWasmStackOverflow),
                    RelocInfo::WASM_STUB_CALL);
       // The call does not return, hence we can ignore any references and just
       // define an empty safepoint.

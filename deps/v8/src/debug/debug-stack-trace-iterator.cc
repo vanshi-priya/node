@@ -70,7 +70,7 @@ int DebugStackTraceIterator::GetContextId() const {
   DCHECK(!Done());
   Handle<Object> context = frame_inspector_->GetContext();
   if (IsContext(*context)) {
-    Object value =
+    Tagged<Object> value =
         Context::cast(*context)->native_context()->debug_context_id();
     if (IsSmi(value)) return Smi::ToInt(value);
   }
@@ -248,7 +248,6 @@ v8::MaybeLocal<v8::Value> DebugStackTraceIterator::Evaluate(
                             inlined_frame_index_, Utils::OpenHandle(*source),
                             throw_on_side_effect)
            .ToHandle(&value)) {
-    isolate_->OptionalRescheduleException(false);
     return v8::MaybeLocal<v8::Value>();
   }
   return Utils::ToLocal(value);

@@ -61,10 +61,10 @@ Reduction WasmGCLowering::Reduce(Node* node) {
       return ReduceRttCanon(node);
     case IrOpcode::kTypeGuard:
       return ReduceTypeGuard(node);
-    case IrOpcode::kWasmExternInternalize:
-      return ReduceWasmExternInternalize(node);
-    case IrOpcode::kWasmExternExternalize:
-      return ReduceWasmExternExternalize(node);
+    case IrOpcode::kWasmAnyConvertExtern:
+      return ReduceWasmAnyConvertExtern(node);
+    case IrOpcode::kWasmExternConvertAny:
+      return ReduceWasmExternConvertAny(node);
     case IrOpcode::kWasmStructGet:
       return ReduceWasmStructGet(node);
     case IrOpcode::kWasmStructSet:
@@ -87,7 +87,9 @@ Reduction WasmGCLowering::Reduce(Node* node) {
 }
 
 Node* WasmGCLowering::Null(wasm::ValueType type) {
-  RootIndex index = wasm::IsSubtypeOf(type, wasm::kWasmExternRef, module_)
+  // TODO(thibaudm): Can we use wasm null for exnref?
+  RootIndex index = wasm::IsSubtypeOf(type, wasm::kWasmExternRef, module_) ||
+                            wasm::IsSubtypeOf(type, wasm::kWasmExnRef, module_)
                         ? RootIndex::kNullValue
                         : RootIndex::kWasmNull;
   return gasm_.LoadImmutable(MachineType::Pointer(), gasm_.LoadRootRegister(),
@@ -97,10 +99,12 @@ Node* WasmGCLowering::Null(wasm::ValueType type) {
 Node* WasmGCLowering::IsNull(Node* object, wasm::ValueType type) {
   Tagged_t static_null =
       wasm::GetWasmEngine()->compressed_wasm_null_value_or_zero();
-  Node* null_value = !wasm::IsSubtypeOf(type, wasm::kWasmExternRef, module_) &&
-                             static_null != 0
-                         ? gasm_.UintPtrConstant(static_null)
-                         : Null(type);
+  Node* null_value =
+      !wasm::IsSubtypeOf(type, wasm::kWasmExternRef, module_) &&
+              !wasm::IsSubtypeOf(type, wasm::kWasmExnRef, module_) &&
+              static_null != 0
+          ? gasm_.UintPtrConstant(static_null)
+          : Null(type);
   return gasm_.TaggedEqual(object, null_value);
 }
 
@@ -471,7 +475,8 @@ Reduction WasmGCLowering::ReduceAssertNotNull(Node* node) {
       if (null_check_strategy_ == NullCheckStrategy::kExplicit ||
           wasm::IsSubtypeOf(wasm::kWasmI31Ref.AsNonNull(), op_parameter.type,
                             module_) ||
-          wasm::IsSubtypeOf(op_parameter.type, wasm::kWasmExternRef, module_)) {
+          wasm::IsSubtypeOf(op_parameter.type, wasm::kWasmExternRef, module_) ||
+          wasm::IsSubtypeOf(op_parameter.type, wasm::kWasmExnRef, module_)) {
         gasm_.TrapIf(IsNull(object, op_parameter.type), op_parameter.trap_id);
         UpdateSourcePosition(gasm_.effect(), node);
       } else {
@@ -540,8 +545,8 @@ constexpr int32_t kInt31MaxValue = 0x3fffffff;
 constexpr int32_t kInt31MinValue = -kInt31MaxValue - 1;
 }  // namespace
 
-Reduction WasmGCLowering::ReduceWasmExternInternalize(Node* node) {
-  DCHECK_EQ(node->opcode(), IrOpcode::kWasmExternInternalize);
+Reduction WasmGCLowering::ReduceWasmAnyConvertExtern(Node* node) {
+  DCHECK_EQ(node->opcode(), IrOpcode::kWasmAnyConvertExtern);
   Node* input = NodeProperties::GetValueInput(node, 0);
   Node* effect = NodeProperties::GetEffectInput(node);
   Node* control = NodeProperties::GetControlInput(node);
@@ -636,8 +641,8 @@ Reduction WasmGCLowering::ReduceWasmExternInternalize(Node* node) {
   return Replace(end_label.PhiAt(0));
 }
 
-Reduction WasmGCLowering::ReduceWasmExternExternalize(Node* node) {
-  DCHECK_EQ(node->opcode(), IrOpcode::kWasmExternExternalize);
+Reduction WasmGCLowering::ReduceWasmExternConvertAny(Node* node) {
+  DCHECK_EQ(node->opcode(), IrOpcode::kWasmExternConvertAny);
   Node* object = node->InputAt(0);
   gasm_.InitializeEffectControl(NodeProperties::GetEffectInput(node),
                                 NodeProperties::GetControlInput(node));
@@ -878,15 +883,15 @@ Reduction WasmGCLowering::ReduceStringPrepareForGetCodeunit(Node* node) {
                       MachineRepresentation::kWord32);        // Offset.
 
   // These values will be used to replace the original node's projections.
-  // The first, "string", is either a SeqString or Smi(0) (in case of external
-  // string). Notably this makes it GC-safe: if that string moves, this pointer
-  // will be updated accordingly.
-  // The second, "offset", has full register width so that it can be used to
-  // store external pointers: for external strings, we add up the character
-  // backing store's base address and any slice offset.
-  // The third, "character width", is a shift width, i.e. it is 0 for one-byte
-  // strings, 1 for two-byte strings, kCharWidthBailoutSentinel for uncached
-  // external strings (for which "string"/"offset" are invalid and unusable).
+  // The first, "string", is either a SeqString or Tagged<Smi>(0) (in case of
+  // external string). Notably this makes it GC-safe: if that string moves, this
+  // pointer will be updated accordingly. The second, "offset", has full
+  // register width so that it can be used to store external pointers: for
+  // external strings, we add up the character backing store's base address and
+  // any slice offset. The third, "character width", is a shift width, i.e. it
+  // is 0 for one-byte strings, 1 for two-byte strings,
+  // kCharWidthBailoutSentinel for uncached external strings (for which
+  // "string"/"offset" are invalid and unusable).
   auto done =
       gasm_.MakeLabel(MachineRepresentation::kTagged,        // String.
                       MachineType::PointerRepresentation(),  // Offset.
@@ -897,8 +902,8 @@ Reduction WasmGCLowering::ReduceStringPrepareForGetCodeunit(Node* node) {
 
   gasm_.Bind(&dispatch);
   {
-    auto thin_string = gasm_.MakeLabel(MachineRepresentation::kTaggedPointer);
-    auto cons_string = gasm_.MakeLabel(MachineRepresentation::kTaggedPointer);
+    auto thin_string = gasm_.MakeLabel();
+    auto cons_string = gasm_.MakeLabel();
 
     Node* string = dispatch.PhiAt(0);
     Node* instance_type = dispatch.PhiAt(1);
@@ -916,10 +921,10 @@ Reduction WasmGCLowering::ReduceStringPrepareForGetCodeunit(Node* node) {
         instance_type, gasm_.Int32Constant(kStringRepresentationMask));
     gasm_.GotoIf(gasm_.Word32Equal(string_representation,
                                    gasm_.Int32Constant(kThinStringTag)),
-                 &thin_string, string);
+                 &thin_string);
     gasm_.GotoIf(gasm_.Word32Equal(string_representation,
                                    gasm_.Int32Constant(kConsStringTag)),
-                 &cons_string, string);
+                 &cons_string);
 
     // Sliced string.
     Node* new_offset = gasm_.Int32Add(

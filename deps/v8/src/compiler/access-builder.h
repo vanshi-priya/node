@@ -37,6 +37,11 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to HeapNumber::value() field.
   static FieldAccess ForHeapNumberValue();
 
+  // Provides access to HeapNumber::value() and Oddball::to_number_raw() fields.
+  // This is the same as ForHeapNumberValue, except it documents (and static
+  // asserts) that both inputs are valid.
+  static FieldAccess ForHeapNumberOrOddballValue();
+
   // Provides access to BigInt's bit field.
   static FieldAccess ForBigIntBitfield();
 
@@ -370,6 +375,10 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   static FieldAccess ForFeedbackVectorInvocationCount();
   static FieldAccess ForFeedbackVectorFlags();
   static FieldAccess ForFeedbackVectorClosureFeedbackCellArray();
+
+#if V8_ENABLE_WEBASSEMBLY
+  static FieldAccess ForWasmArrayLength();
+#endif
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(AccessBuilder);

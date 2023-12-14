@@ -197,10 +197,39 @@ RUNTIME_FUNCTION(Runtime_HasUnoptimizedWasmToJSWrapper) {
   Tagged<Code> wrapper =
       isolate->builtins()->code(Builtin::kWasmToJsWrapperAsm);
   if (!internal->call_target()) {
-    return isolate->heap()->ToBoolean(internal->code() == wrapper);
+    return isolate->heap()->ToBoolean(internal->code(isolate) == wrapper);
   }
   return isolate->heap()->ToBoolean(internal->call_target() ==
                                     wrapper->instruction_start());
+}
+
+RUNTIME_FUNCTION(Runtime_HasUnoptimizedJSToJSWrapper) {
+  HandleScope shs(isolate);
+  DCHECK_EQ(1, args.length());
+  Handle<Object> param = args.at<Object>(0);
+  if (!WasmJSFunction::IsWasmJSFunction(*param)) {
+    return isolate->heap()->ToBoolean(false);
+  }
+  Handle<WasmJSFunction> wasm_js_function = Handle<WasmJSFunction>::cast(param);
+  Handle<WasmJSFunctionData> function_data =
+      handle(wasm_js_function->shared()->wasm_js_function_data(), isolate);
+
+  Handle<JSFunction> external_function =
+      WasmInternalFunction::GetOrCreateExternal(
+          handle(function_data->internal(), isolate));
+  Handle<Code> external_function_code =
+      handle(external_function->code(isolate), isolate);
+  Handle<Code> function_data_code =
+      handle(function_data->wrapper_code(isolate), isolate);
+  Tagged<Code> wrapper = isolate->builtins()->code(Builtin::kJSToJSWrapper);
+  if (wrapper != *external_function_code) {
+    return isolate->heap()->ToBoolean(false);
+  }
+  if (wrapper != *function_data_code) {
+    return isolate->heap()->ToBoolean(false);
+  }
+
+  return isolate->heap()->ToBoolean(true);
 }
 
 RUNTIME_FUNCTION(Runtime_WasmTraceEnter) {
@@ -333,7 +362,7 @@ RUNTIME_FUNCTION(Runtime_IsWasmCode) {
   SealHandleScope shs(isolate);
   DCHECK_EQ(1, args.length());
   auto function = JSFunction::cast(args[0]);
-  Tagged<Code> code = function->code();
+  Tagged<Code> code = function->code(isolate);
   bool is_js_to_wasm = code->kind() == CodeKind::JS_TO_WASM_FUNCTION ||
                        (code->builtin_id() == Builtin::kJSToWasmWrapper);
   return isolate->heap()->ToBoolean(is_js_to_wasm);
@@ -634,6 +663,16 @@ RUNTIME_FUNCTION(Runtime_WasmCompiledExportWrappersCount) {
 RUNTIME_FUNCTION(Runtime_WasmSwitchToTheCentralStackCount) {
   int count = isolate->wasm_switch_to_the_central_stack_counter();
   return Smi::FromInt(count);
+}
+
+RUNTIME_FUNCTION(Runtime_CheckIsOnCentralStack) {
+  // This function verifies that itself, and therefore the JS function that
+  // called it, is running on the central stack. This is used to check that wasm
+  // switches to the central stack to run JS imports.
+#if !V8_TARGET_ARCH_ARM
+  CHECK(isolate->IsOnCentralStack());
+#endif
+  return ReadOnlyRoots(isolate).undefined_value();
 }
 
 }  // namespace internal

@@ -34,7 +34,7 @@ Maybe<bool> IsProperty(v8::Isolate* isolate, v8::Local<v8::Context> ctx,
                        const char* value, bool* found_options_object) {
   auto k = v8::String::NewFromUtf8(isolate, key).ToLocalChecked();
   auto maybe_property = object->Get(ctx, k);
-  // Handle pending or scheduled exception.
+  // Handle the exception.
   if (maybe_property.IsEmpty()) return Nothing<bool>();
   // If the property does not exist or is explicitly set to undefined,
   // return false.
@@ -140,8 +140,8 @@ class AsyncGC final : public CancelableTask {
 
  private:
   v8::Isolate* isolate_;
-  v8::Persistent<v8::Context> ctx_;
-  v8::Persistent<v8::Promise::Resolver> resolver_;
+  v8::Global<v8::Context> ctx_;
+  v8::Global<v8::Promise::Resolver> resolver_;
   v8::Isolate::GarbageCollectionType type_;
 };
 

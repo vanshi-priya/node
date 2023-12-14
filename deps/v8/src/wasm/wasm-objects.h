@@ -13,6 +13,8 @@
 
 #include "src/base/bit-field.h"
 #include "src/debug/interface-types.h"
+#include "src/heap/heap.h"
+#include "src/objects/backing-store.h"
 #include "src/objects/foreign.h"
 #include "src/objects/js-function.h"
 #include "src/objects/js-objects.h"
@@ -62,7 +64,7 @@ class Managed;
 
 #define DECL_OPTIONAL_ACCESSORS(name, type) \
   DECL_GETTER(has_##name, bool)             \
-  DECL_ACCESSORS(name, Tagged<type>)
+  DECL_ACCESSORS(name, type)
 
 class V8_EXPORT_PRIVATE FunctionTargetAndRef {
  public:
@@ -231,8 +233,7 @@ class WasmTableObject
                                    int entry_index,
                                    Handle<WasmCapiFunction> capi_function);
 
-  static void ClearDispatchTables(Isolate* isolate,
-                                  Handle<WasmTableObject> table, int index);
+  void ClearDispatchTables(int index);
 
   V8_EXPORT_PRIVATE static void SetFunctionTablePlaceholder(
       Isolate* isolate, Handle<WasmTableObject> table, int entry_index,
@@ -261,7 +262,7 @@ class WasmTableObject
 class WasmMemoryObject
     : public TorqueGeneratedWasmMemoryObject<WasmMemoryObject, JSObject> {
  public:
-  DECL_OPTIONAL_ACCESSORS(instances, WeakArrayList)
+  DECL_OPTIONAL_ACCESSORS(instances, Tagged<WeakArrayList>)
 
   // Add a use of this memory object to the given instance. This updates the
   // internal weak list of instances that use this memory and also updates the
@@ -346,26 +347,24 @@ class V8_EXPORT_PRIVATE WasmInstanceObject : public JSObject {
   DECL_ACCESSORS(exports_object, Tagged<JSObject>)
   DECL_ACCESSORS(native_context, Tagged<Context>)
   DECL_ACCESSORS(memory_objects, Tagged<FixedArray>)
-  DECL_OPTIONAL_ACCESSORS(untagged_globals_buffer, JSArrayBuffer)
-  DECL_OPTIONAL_ACCESSORS(tagged_globals_buffer, FixedArray)
-  DECL_OPTIONAL_ACCESSORS(imported_mutable_globals_buffers, FixedArray)
-  DECL_OPTIONAL_ACCESSORS(tables, FixedArray)
-  DECL_OPTIONAL_ACCESSORS(indirect_function_tables, FixedArray)
+  DECL_OPTIONAL_ACCESSORS(untagged_globals_buffer, Tagged<JSArrayBuffer>)
+  DECL_OPTIONAL_ACCESSORS(tagged_globals_buffer, Tagged<FixedArray>)
+  DECL_OPTIONAL_ACCESSORS(imported_mutable_globals_buffers, Tagged<FixedArray>)
+  DECL_OPTIONAL_ACCESSORS(tables, Tagged<FixedArray>)
+  DECL_OPTIONAL_ACCESSORS(indirect_function_tables, Tagged<FixedArray>)
   DECL_ACCESSORS(imported_function_refs, Tagged<FixedArray>)
   DECL_ACCESSORS(imported_mutable_globals, Tagged<FixedAddressArray>)
   DECL_ACCESSORS(imported_function_targets, Tagged<FixedAddressArray>)
-  DECL_OPTIONAL_ACCESSORS(indirect_function_table_refs, FixedArray)
+  DECL_OPTIONAL_ACCESSORS(indirect_function_table_refs, Tagged<FixedArray>)
   DECL_ACCESSORS(indirect_function_table_sig_ids, Tagged<FixedUInt32Array>)
   DECL_ACCESSORS(indirect_function_table_targets, Tagged<ExternalPointerArray>)
-  DECL_OPTIONAL_ACCESSORS(tags_table, FixedArray)
+  DECL_OPTIONAL_ACCESSORS(tags_table, Tagged<FixedArray>)
   DECL_ACCESSORS(wasm_internal_functions, Tagged<FixedArray>)
   DECL_ACCESSORS(managed_object_maps, Tagged<FixedArray>)
   DECL_ACCESSORS(feedback_vectors, Tagged<FixedArray>)
   DECL_ACCESSORS(well_known_imports, Tagged<FixedArray>)
   DECL_SANDBOXED_POINTER_ACCESSORS(memory0_start, uint8_t*)
   DECL_PRIMITIVE_ACCESSORS(memory0_size, size_t)
-  DECL_PRIMITIVE_ACCESSORS(stack_limit_address, Address)
-  DECL_PRIMITIVE_ACCESSORS(real_stack_limit_address, Address)
   DECL_PRIMITIVE_ACCESSORS(new_allocation_limit_address, Address*)
   DECL_PRIMITIVE_ACCESSORS(new_allocation_top_address, Address*)
   DECL_PRIMITIVE_ACCESSORS(old_allocation_limit_address, Address*)
@@ -409,7 +408,6 @@ class V8_EXPORT_PRIVATE WasmInstanceObject : public JSObject {
   V(kOptionalPaddingOffset, POINTER_SIZE_PADDING(kOptionalPaddingOffset)) \
   V(kMemory0StartOffset, kSystemPointerSize)                              \
   V(kMemory0SizeOffset, kSizetSize)                                       \
-  V(kStackLimitAddressOffset, kSystemPointerSize)                         \
   V(kIsorecursiveCanonicalTypesOffset, kSystemPointerSize)                \
   V(kGlobalsStartOffset, kSystemPointerSize)                              \
   V(kJumpTableStartOffset, kSystemPointerSize)                            \
@@ -419,7 +417,6 @@ class V8_EXPORT_PRIVATE WasmInstanceObject : public JSObject {
   V(kNewAllocationTopAddressOffset, kSystemPointerSize)                   \
   V(kOldAllocationLimitAddressOffset, kSystemPointerSize)                 \
   V(kOldAllocationTopAddressOffset, kSystemPointerSize)                   \
-  V(kRealStackLimitAddressOffset, kSystemPointerSize)                     \
   V(kHookOnFunctionCallAddressOffset, kSystemPointerSize)                 \
   V(kTieringBudgetArrayOffset, kSystemPointerSize)                        \
   /* Less than system pointer size aligned fields are below. */           \
@@ -515,8 +512,8 @@ class V8_EXPORT_PRIVATE WasmInstanceObject : public JSObject {
 
   Address GetCallTarget(uint32_t func_index);
 
-  Handle<WasmIndirectFunctionTable> GetIndirectFunctionTable(
-      Isolate*, uint32_t table_index);
+  inline Tagged<WasmIndirectFunctionTable> indirect_function_table(
+      uint32_t table_index);
 
   void SetIndirectFunctionTableShortcuts(Isolate* isolate);
 
@@ -564,17 +561,15 @@ class V8_EXPORT_PRIVATE WasmInstanceObject : public JSObject {
 
   // Get a raw pointer to the location where the given global is stored.
   // {global} must not be a reference type.
-  static uint8_t* GetGlobalStorage(Handle<WasmInstanceObject>,
-                                   const wasm::WasmGlobal&);
+  uint8_t* GetGlobalStorage(const wasm::WasmGlobal&);
 
   // Get the FixedArray and the index in that FixedArray for the given global,
   // which must be a reference type.
-  static std::pair<Handle<FixedArray>, uint32_t> GetGlobalBufferAndIndex(
-      Handle<WasmInstanceObject>, const wasm::WasmGlobal&);
+  std::pair<Tagged<FixedArray>, uint32_t> GetGlobalBufferAndIndex(
+      const wasm::WasmGlobal&);
 
   // Get the value of a global in the given instance.
-  static wasm::WasmValue GetGlobalValue(Handle<WasmInstanceObject>,
-                                        const wasm::WasmGlobal&);
+  wasm::WasmValue GetGlobalValue(const wasm::WasmGlobal&);
 
   OBJECT_CONSTRUCTORS(WasmInstanceObject, JSObject);
 
@@ -619,6 +614,11 @@ class V8_EXPORT_PRIVATE WasmExceptionPackage : public JSObject {
   // Determines the size of the array holding all encoded exception values.
   static uint32_t GetEncodedSize(const wasm::WasmTagSig* tag);
   static uint32_t GetEncodedSize(const wasm::WasmTag* tag);
+
+  // In-object fields.
+  enum { kTagIndex, kValuesIndex, kInObjectFieldCount };
+  static constexpr int kSize =
+      kHeaderSize + (kTaggedSize * kInObjectFieldCount);
 
   DECL_CAST(WasmExceptionPackage)
   DECL_PRINTER(WasmExceptionPackage)
@@ -763,6 +763,8 @@ class WasmIndirectFunctionTable
 class WasmFunctionData
     : public TorqueGeneratedWasmFunctionData<WasmFunctionData, HeapObject> {
  public:
+  DECL_CODE_POINTER_ACCESSORS(wrapper_code)
+
   DECL_ACCESSORS(internal, Tagged<WasmInternalFunction>)
 
   DECL_PRINTER(WasmFunctionData)
@@ -783,6 +785,8 @@ class WasmExportedFunctionData
     : public TorqueGeneratedWasmExportedFunctionData<WasmExportedFunctionData,
                                                      WasmFunctionData> {
  public:
+  DECL_CODE_POINTER_ACCESSORS(c_wrapper_code)
+
   DECL_EXTERNAL_POINTER_ACCESSORS(sig, wasm::FunctionSig*)
 
   // Dispatched behavior.
@@ -839,6 +843,8 @@ class WasmInternalFunction
 
   DECL_EXTERNAL_POINTER_ACCESSORS(call_target, Address)
 
+  DECL_CODE_POINTER_ACCESSORS(code)
+
   // Dispatched behavior.
   DECL_PRINTER(WasmInternalFunction)
 
@@ -858,8 +864,6 @@ class WasmJSFunctionData
     : public TorqueGeneratedWasmJSFunctionData<WasmJSFunctionData,
                                                WasmFunctionData> {
  public:
-  DECL_ACCESSORS(wasm_to_js_wrapper_code, Tagged<Code>)
-
   // Dispatched behavior.
   DECL_PRINTER(WasmJSFunctionData)
 
@@ -998,11 +1002,6 @@ class WasmTypeInfo
 };
 
 class WasmObject : public TorqueGeneratedWasmObject<WasmObject, JSReceiver> {
- public:
-  // Prepares given value for being stored into a field of given Wasm type.
-  V8_WARN_UNUSED_RESULT static inline MaybeHandle<Object> ToWasmValue(
-      Isolate* isolate, wasm::ValueType type, Handle<Object> value);
-
  protected:
   // Returns boxed value of the object's field/element with given type and
   // offset.
@@ -1010,11 +1009,6 @@ class WasmObject : public TorqueGeneratedWasmObject<WasmObject, JSReceiver> {
                                            Handle<HeapObject> obj,
                                            wasm::ValueType type,
                                            uint32_t offset);
-
-  static inline void WriteValueAt(Isolate* isolate, Handle<HeapObject> obj,
-                                  wasm::ValueType type, uint32_t offset,
-                                  Handle<Object> value);
-
  private:
   template <typename ElementType>
   static ElementType FromNumber(Tagged<Object> value);
@@ -1041,11 +1035,6 @@ class WasmStruct : public TorqueGeneratedWasmStruct<WasmStruct, WasmObject> {
 
   wasm::WasmValue GetFieldValue(uint32_t field_index);
 
-  // Returns boxed value of the object's field.
-  static inline Handle<Object> GetField(Isolate* isolate,
-                                        Handle<WasmStruct> obj,
-                                        uint32_t field_index);
-
   static inline void SetField(Isolate* isolate, Handle<WasmStruct> obj,
                               uint32_t field_index, Handle<Object> value);
 
@@ -1055,6 +1044,15 @@ class WasmStruct : public TorqueGeneratedWasmStruct<WasmStruct, WasmObject> {
 
   TQ_OBJECT_CONSTRUCTORS(WasmStruct)
 };
+
+int WasmStruct::Size(const wasm::StructType* type) {
+  // Object size must fit into a Smi (because of filler objects), and its
+  // computation must not overflow.
+  static_assert(Smi::kMaxValue <= kMaxInt);
+  DCHECK_LE(type->total_fields_size(), Smi::kMaxValue - kHeaderSize);
+  return std::max(kHeaderSize + static_cast<int>(type->total_fields_size()),
+                  Heap::kMinObjectSizeInTaggedWords * kTaggedSize);
+}
 
 class WasmArray : public TorqueGeneratedWasmArray<WasmArray, WasmObject> {
  public:
@@ -1169,8 +1167,7 @@ class WasmNull : public TorqueGeneratedWasmNull<WasmNull, HeapObject> {
 
 #undef DECL_OPTIONAL_ACCESSORS
 
-Handle<Map> CreateFuncRefMap(Isolate* isolate, Handle<Map> opt_rtt_parent,
-                             Handle<WasmInstanceObject> opt_instance);
+Handle<Map> CreateFuncRefMap(Isolate* isolate, Handle<Map> opt_rtt_parent);
 
 namespace wasm {
 // Takes a {value} in the JS representation and typechecks it according to

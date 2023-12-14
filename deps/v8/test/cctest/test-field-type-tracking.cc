@@ -127,7 +127,7 @@ class Expectations {
       os << "Descriptor @ ";
 
       if (kinds_[i] == PropertyKind::kData) {
-        FieldType::cast(*values_[i])->PrintTo(os);
+        FieldType::PrintTo(FieldType::cast(*values_[i]), os);
       } else {
         // kAccessor
         os << "(get: " << Brief(*values_[i])
@@ -625,7 +625,7 @@ static void CheckCodeObjectForDeopt(const CRFTData& from,
                                     Handle<Code> code_field_repr,
                                     Handle<Code> code_field_const,
                                     bool expected_deopt) {
-  if (!(*from.type)->Equals(*expected.type)) {
+  if (!FieldType::Equals(*from.type, *expected.type)) {
     CHECK_EQ(expected_deopt, code_field_type->marked_for_deoptimization());
   } else {
     CHECK(!code_field_type->marked_for_deoptimization());
@@ -1751,8 +1751,9 @@ static void TestReconfigureElementsKind_GeneralizeFieldInPlace(
   Expectations expectations(isolate, PACKED_SMI_ELEMENTS);
 
   // Create a map, add required properties to it and initialize expectations.
-  Handle<Map> initial_map = isolate->factory()->NewMap(
-      JS_ARRAY_TYPE, JSArray::kHeaderSize, PACKED_SMI_ELEMENTS);
+  Handle<Map> initial_map =
+      isolate->factory()->NewContextfulMapForCurrentContext(
+          JS_ARRAY_TYPE, JSArray::kHeaderSize, PACKED_SMI_ELEMENTS);
   initial_map->SetConstructor(*isolate->object_function());
 
   Handle<Map> map = initial_map;

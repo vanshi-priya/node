@@ -8,8 +8,7 @@
 #include "src/builtins/builtins-regexp-gen.h"
 #include "src/builtins/builtins-utils-gen.h"
 #include "src/builtins/builtins.h"
-#include "src/codegen/code-factory.h"
-#include "src/codegen/code-stub-assembler.h"
+#include "src/codegen/code-stub-assembler-inl.h"
 #include "src/execution/protectors.h"
 #include "src/heap/factory-inl.h"
 #include "src/heap/heap-inl.h"
@@ -1134,7 +1133,7 @@ void StringBuiltinsAssembler::MaybeCallFunctionAtSymbol(
 
 const TNode<Smi> StringBuiltinsAssembler::IndexOfDollarChar(
     const TNode<Context> context, const TNode<String> string) {
-  const TNode<String> dollar_string = HeapConstant(
+  const TNode<String> dollar_string = HeapConstantNoHole(
       isolate()->factory()->LookupSingleCharacterStringFromCode('$'));
   const TNode<Smi> dollar_ix = CAST(CallBuiltin(
       Builtin::kStringIndexOf, context, string, dollar_string, SmiConstant(0)));

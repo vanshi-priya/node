@@ -628,6 +628,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   void pushq(Immediate value);
   // Push a 32 bit integer, and guarantee that it is actually pushed as a
   // 32 bit value, the normal push will optimize the 8 bit case.
+  static constexpr int kPushq32InstrSize = 5;
   void pushq_imm32(int32_t imm32);
   void pushq(Register src);
   void pushq(Operand src);
@@ -860,6 +861,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   void ret(int imm16);
   void ud2();
   void setcc(Condition cc, Register reg);
+  void endbr64();
 
   void pblendw(XMMRegister dst, Operand src, uint8_t mask);
   void pblendw(XMMRegister dst, XMMRegister src, uint8_t mask);
@@ -900,6 +902,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // the next instructions (which starts at {pc_offset() + kNearJmpInstrSize}).
   static constexpr int kNearJmpInstrSize = 5;
   void near_call(intptr_t disp, RelocInfo::Mode rmode);
+  void near_call(Builtin buitin, RelocInfo::Mode rmode);
   void near_jmp(intptr_t disp, RelocInfo::Mode rmode);
   void near_j(Condition cc, intptr_t disp, RelocInfo::Mode rmode);
 
@@ -917,8 +920,13 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   void jmp(Handle<Code> target, RelocInfo::Mode rmode);
 
   // Jump near absolute indirect (r64)
+#ifdef V8_ENABLE_CET_IBT
+  void jmp(Register adr, bool notrack = false);
+  void jmp(Operand src, bool notrack = false);
+#else
   void jmp(Register adr);
   void jmp(Operand src);
+#endif
 
   // Unconditional jump relative to the current address. Low-level routine,
   // use with caution!
@@ -1511,6 +1519,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
                    uint8_t lane);
   void vperm2f128(YMMRegister dst, YMMRegister src1, YMMRegister src2,
                   uint8_t lane);
+  void vextractf128(XMMRegister dst, YMMRegister src, uint8_t lane);
 
   void fma_instr(uint8_t op, XMMRegister dst, XMMRegister src1,
                  XMMRegister src2, VectorLength l, SIMDPrefix pp,

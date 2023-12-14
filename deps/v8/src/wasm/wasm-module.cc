@@ -30,6 +30,21 @@ static_assert(
     kV8MaxRttSubtypingDepth <=
     std::numeric_limits<decltype(TypeDefinition().subtyping_depth)>::max());
 
+// static
+int WasmMemory::GetMemory64GuardsShift(uint64_t max_memory_size) {
+  // For memory64 we need a guard region that is at least twice the size of the
+  // maximum size of the Wasm memory. In order to speed-up bounds checks, we
+  // allocate the greater power-of-two size.
+  DCHECK_NE(max_memory_size, 0U);
+  size_t min_guards_size = 2 * max_memory_size;
+  int guards_shift = 63 - base::bits::CountLeadingZeros64(min_guards_size);
+  DCHECK_GE(guards_shift, 0);
+  if (!base::bits::IsPowerOfTwo(min_guards_size)) {
+    guards_shift++;
+  }
+  return guards_shift;
+}
+
 template <class Value>
 void AdaptiveMap<Value>::FinishInitialization() {
   uint32_t count = 0;
@@ -325,7 +340,7 @@ Handle<JSObject> GetTypeForMemory(Isolate* isolate, uint32_t min_size,
   JSObject::AddProperty(isolate, object, shared_string,
                         factory->ToBoolean(shared), NONE);
 
-  auto index = is_memory64 ? "u64" : "u32";
+  auto index = is_memory64 ? "i64" : "i32";
   JSObject::AddProperty(isolate, object, index_string,
                         factory->InternalizeUtf8String(index), NONE);
 
@@ -434,7 +449,7 @@ Handle<JSArray> GetImports(Isolate* isolate,
         import_kind = tag_string;
         break;
     }
-    DCHECK(!import_kind->is_null());
+    DCHECK(!import_kind.is_null());
 
     Handle<String> import_module =
         WasmModuleObject::ExtractUtf8StringFromModuleBytes(

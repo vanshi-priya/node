@@ -15,7 +15,6 @@
 #include "src/heap/memory-chunk.h"
 
 #if V8_ENABLE_WEBASSEMBLY
-#include "src/wasm/wasm-code-manager.h"
 #include "src/wasm/wasm-objects.h"
 #endif  // V8_ENABLE_WEBASSEMBLY
 
@@ -77,7 +76,18 @@ class PPCOperandConverter final : public InstructionOperandConverter {
 #endif
       case Constant::kExternalReference:
         return Operand(constant.ToExternalReference());
-      case Constant::kCompressedHeapObject:
+      case Constant::kCompressedHeapObject: {
+        RootIndex root_index;
+        if (gen_->isolate()->roots_table().IsRootHandle(constant.ToHeapObject(),
+                                                        &root_index)) {
+          CHECK(COMPRESS_POINTERS_BOOL);
+          CHECK(V8_STATIC_ROOTS_BOOL || !gen_->isolate()->bootstrapper());
+          Tagged_t ptr =
+              MacroAssemblerBase::ReadOnlyRootPtr(root_index, gen_->isolate());
+          return Operand(ptr);
+        }
+        return Operand(constant.ToHeapObject());
+      }
       case Constant::kHeapObject:
       case Constant::kRpoNumber:
         break;
@@ -802,8 +812,7 @@ void CodeGenerator::BailoutIfDeoptimized() {
                      r0);
   __ LoadU32(r11, FieldMemOperand(r11, Code::kFlagsOffset), r0);
   __ TestBit(r11, Code::kMarkedForDeoptimizationBit);
-  __ Jump(BUILTIN_CODE(isolate(), CompileLazyDeoptimizedCode),
-          RelocInfo::CODE_TARGET, ne, cr0);
+  __ TailCallBuiltin(Builtin::kCompileLazyDeoptimizedCode, ne, cr0);
 }
 
 // Assembles an instruction after register allocation, producing machine code.
@@ -1067,8 +1076,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         // We don't actually want to generate a pile of code for this, so just
         // claim there is a stack frame, without generating one.
         FrameScope scope(masm(), StackFrame::NO_FRAME_TYPE);
-        __ Call(isolate()->builtins()->code_handle(Builtin::kAbortCSADcheck),
-                RelocInfo::CODE_TARGET);
+        __ CallBuiltin(Builtin::kAbortCSADcheck);
       }
       __ stop();
       break;
@@ -1101,6 +1109,16 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ mr(i.OutputRegister(), fp);
       }
       break;
+#if V8_ENABLE_WEBASSEMBLY
+    case kArchStackPointer:
+      __ mr(i.OutputRegister(), sp);
+      break;
+    case kArchSetStackPointer: {
+      DCHECK(instr->InputAt(0)->IsRegister());
+      __ mr(sp, i.InputRegister(0));
+      break;
+    }
+#endif  // V8_ENABLE_WEBASSEMBLY
     case kArchStackPointerGreaterThan: {
       // Potentially apply an offset to the current stack pointer before the
       // comparison to consider the size difference of an optimized frame versus
@@ -1868,13 +1886,35 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       }
       break;
     }
-    case kPPC_DoubleToInt32:
-    case kPPC_DoubleToUint32:
+#define DOUBLE_TO_INT32(op)                                                \
+  bool check_conversion = i.OutputCount() > 1;                             \
+  CRegister cr = cr7;                                                      \
+  FPSCRBit fps_bit = VXCVI;                                                \
+  int cr_bit = v8::internal::Assembler::encode_crbit(                      \
+      cr, static_cast<CRBit>(fps_bit % CRWIDTH));                          \
+  __ mtfsb0(fps_bit); /* clear FPSCR:VXCVI bit */                          \
+  __ op(kScratchDoubleReg, i.InputDoubleRegister(0));                      \
+  __ MovDoubleLowToInt(i.OutputRegister(0), kScratchDoubleReg);            \
+  __ mcrfs(cr, VXCVI); /* extract FPSCR field containing VXCVI into cr7 */ \
+  if (check_conversion) {                                                  \
+    __ li(i.OutputRegister(1), Operand(1));                                \
+    __ isel(i.OutputRegister(1), r0, i.OutputRegister(1), cr_bit);         \
+  } else {                                                                 \
+    __ isel(i.OutputRegister(0), r0, i.OutputRegister(0), cr_bit);         \
+  }
+    case kPPC_DoubleToInt32: {
+      DOUBLE_TO_INT32(fctiwz)
+      break;
+    }
+    case kPPC_DoubleToUint32: {
+      DOUBLE_TO_INT32(fctiwuz)
+      break;
+    }
+#undef DOUBLE_TO_INT32
     case kPPC_DoubleToInt64: {
 #if V8_TARGET_ARCH_PPC64
-      bool check_conversion =
-          (opcode == kPPC_DoubleToInt64 && i.OutputCount() > 1);
-        __ mtfsb0(VXCVI);  // clear FPSCR:VXCVI bit
+      bool check_conversion = i.OutputCount() > 1;
+      __ mtfsb0(VXCVI);  // clear FPSCR:VXCVI bit
 #endif
       __ ConvertDoubleToInt64(i.InputDoubleRegister(0),
 #if !V8_TARGET_ARCH_PPC64
@@ -2548,86 +2588,134 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ I8x16Splat(i.OutputSimd128Register(), i.InputRegister(0));
       break;
     }
-    case kPPC_F64x2ExtractLane: {
-      __ F64x2ExtractLane(i.OutputDoubleRegister(), i.InputSimd128Register(0),
-                          i.InputInt8(1), kScratchSimd128Reg, kScratchReg);
+    case kPPC_FExtractLane: {
+      int lane_size = LaneSizeField::decode(instr->opcode());
+      switch (lane_size) {
+        case 32: {
+          __ F32x4ExtractLane(i.OutputDoubleRegister(),
+                              i.InputSimd128Register(0), i.InputInt8(1),
+                              kScratchSimd128Reg, kScratchReg, ip);
+          break;
+        }
+        case 64: {
+          __ F64x2ExtractLane(i.OutputDoubleRegister(),
+                              i.InputSimd128Register(0), i.InputInt8(1),
+                              kScratchSimd128Reg, kScratchReg);
+          break;
+        }
+        default:
+          UNREACHABLE();
+      }
       break;
     }
-    case kPPC_F32x4ExtractLane: {
-      __ F32x4ExtractLane(i.OutputDoubleRegister(), i.InputSimd128Register(0),
-                          i.InputInt8(1), kScratchSimd128Reg, kScratchReg, ip);
+    case kPPC_IExtractLane: {
+      int lane_size = LaneSizeField::decode(instr->opcode());
+      switch (lane_size) {
+        case 32: {
+          __ I32x4ExtractLane(i.OutputRegister(), i.InputSimd128Register(0),
+                              i.InputInt8(1), kScratchSimd128Reg);
+          break;
+        }
+        case 64: {
+          __ I64x2ExtractLane(i.OutputRegister(), i.InputSimd128Register(0),
+                              i.InputInt8(1), kScratchSimd128Reg);
+          break;
+        }
+        default:
+          UNREACHABLE();
+      }
       break;
     }
-    case kPPC_I64x2ExtractLane: {
-      __ I64x2ExtractLane(i.OutputRegister(), i.InputSimd128Register(0),
-                          i.InputInt8(1), kScratchSimd128Reg);
+    case kPPC_IExtractLaneU: {
+      int lane_size = LaneSizeField::decode(instr->opcode());
+      switch (lane_size) {
+        case 8: {
+          __ I8x16ExtractLaneU(i.OutputRegister(), i.InputSimd128Register(0),
+                               i.InputInt8(1), kScratchSimd128Reg);
+          break;
+        }
+        case 16: {
+          __ I16x8ExtractLaneU(i.OutputRegister(), i.InputSimd128Register(0),
+                               i.InputInt8(1), kScratchSimd128Reg);
+          break;
+        }
+        default:
+          UNREACHABLE();
+      }
       break;
     }
-    case kPPC_I32x4ExtractLane: {
-      __ I32x4ExtractLane(i.OutputRegister(), i.InputSimd128Register(0),
-                          i.InputInt8(1), kScratchSimd128Reg);
+    case kPPC_IExtractLaneS: {
+      int lane_size = LaneSizeField::decode(instr->opcode());
+      switch (lane_size) {
+        case 8: {
+          __ I8x16ExtractLaneS(i.OutputRegister(), i.InputSimd128Register(0),
+                               i.InputInt8(1), kScratchSimd128Reg);
+          break;
+        }
+        case 16: {
+          __ I16x8ExtractLaneS(i.OutputRegister(), i.InputSimd128Register(0),
+                               i.InputInt8(1), kScratchSimd128Reg);
+          break;
+        }
+        default:
+          UNREACHABLE();
+      }
       break;
     }
-    case kPPC_I16x8ExtractLaneU: {
-      __ I16x8ExtractLaneU(i.OutputRegister(), i.InputSimd128Register(0),
-                           i.InputInt8(1), kScratchSimd128Reg);
-      break;
-    }
-    case kPPC_I16x8ExtractLaneS: {
-      __ I16x8ExtractLaneS(i.OutputRegister(), i.InputSimd128Register(0),
-                           i.InputInt8(1), kScratchSimd128Reg);
-      break;
-    }
-    case kPPC_I8x16ExtractLaneU: {
-      __ I8x16ExtractLaneU(i.OutputRegister(), i.InputSimd128Register(0),
-                           i.InputInt8(1), kScratchSimd128Reg);
-      break;
-    }
-    case kPPC_I8x16ExtractLaneS: {
-      __ I8x16ExtractLaneS(i.OutputRegister(), i.InputSimd128Register(0),
-                           i.InputInt8(1), kScratchSimd128Reg);
-      break;
-    }
-    case kPPC_F64x2ReplaceLane: {
+    case kPPC_FReplaceLane: {
       DCHECK_EQ(i.OutputSimd128Register(), i.InputSimd128Register(0));
-      __ F64x2ReplaceLane(i.OutputSimd128Register(), i.InputSimd128Register(0),
-                          i.InputDoubleRegister(2), i.InputInt8(1), kScratchReg,
-                          kScratchSimd128Reg);
+      int lane_size = LaneSizeField::decode(instr->opcode());
+      switch (lane_size) {
+        case 32: {
+          __ F32x4ReplaceLane(
+              i.OutputSimd128Register(), i.InputSimd128Register(0),
+              i.InputDoubleRegister(2), i.InputInt8(1), kScratchReg,
+              kScratchDoubleReg, kScratchSimd128Reg);
+          break;
+        }
+        case 64: {
+          __ F64x2ReplaceLane(i.OutputSimd128Register(),
+                              i.InputSimd128Register(0),
+                              i.InputDoubleRegister(2), i.InputInt8(1),
+                              kScratchReg, kScratchSimd128Reg);
+          break;
+        }
+        default:
+          UNREACHABLE();
+      }
       break;
     }
-    case kPPC_F32x4ReplaceLane: {
+    case kPPC_IReplaceLane: {
       DCHECK_EQ(i.OutputSimd128Register(), i.InputSimd128Register(0));
-      __ F32x4ReplaceLane(i.OutputSimd128Register(), i.InputSimd128Register(0),
-                          i.InputDoubleRegister(2), i.InputInt8(1), kScratchReg,
-                          kScratchDoubleReg, kScratchSimd128Reg);
-      break;
-    }
-    case kPPC_I64x2ReplaceLane: {
-      DCHECK_EQ(i.OutputSimd128Register(), i.InputSimd128Register(0));
-      __ I64x2ReplaceLane(i.OutputSimd128Register(), i.InputSimd128Register(0),
-                          i.InputRegister(2), i.InputInt8(1),
-                          kScratchSimd128Reg);
-      break;
-    }
-    case kPPC_I32x4ReplaceLane: {
-      DCHECK_EQ(i.OutputSimd128Register(), i.InputSimd128Register(0));
-      __ I32x4ReplaceLane(i.OutputSimd128Register(), i.InputSimd128Register(0),
-                          i.InputRegister(2), i.InputInt8(1),
-                          kScratchSimd128Reg);
-      break;
-    }
-    case kPPC_I16x8ReplaceLane: {
-      DCHECK_EQ(i.OutputSimd128Register(), i.InputSimd128Register(0));
-      __ I16x8ReplaceLane(i.OutputSimd128Register(), i.InputSimd128Register(0),
-                          i.InputRegister(2), i.InputInt8(1),
-                          kScratchSimd128Reg);
-      break;
-    }
-    case kPPC_I8x16ReplaceLane: {
-      DCHECK_EQ(i.OutputSimd128Register(), i.InputSimd128Register(0));
-      __ I8x16ReplaceLane(i.OutputSimd128Register(), i.InputSimd128Register(0),
-                          i.InputRegister(2), i.InputInt8(1),
-                          kScratchSimd128Reg);
+      int lane_size = LaneSizeField::decode(instr->opcode());
+      switch (lane_size) {
+        case 8: {
+          __ I8x16ReplaceLane(i.OutputSimd128Register(),
+                              i.InputSimd128Register(0), i.InputRegister(2),
+                              i.InputInt8(1), kScratchSimd128Reg);
+          break;
+        }
+        case 16: {
+          __ I16x8ReplaceLane(i.OutputSimd128Register(),
+                              i.InputSimd128Register(0), i.InputRegister(2),
+                              i.InputInt8(1), kScratchSimd128Reg);
+          break;
+        }
+        case 32: {
+          __ I32x4ReplaceLane(i.OutputSimd128Register(),
+                              i.InputSimd128Register(0), i.InputRegister(2),
+                              i.InputInt8(1), kScratchSimd128Reg);
+          break;
+        }
+        case 64: {
+          __ I64x2ReplaceLane(i.OutputSimd128Register(),
+                              i.InputSimd128Register(0), i.InputRegister(2),
+                              i.InputInt8(1), kScratchSimd128Reg);
+          break;
+        }
+        default:
+          UNREACHABLE();
+      }
       break;
     }
     case kPPC_I64x2Mul: {
@@ -3076,7 +3164,25 @@ void CodeGenerator::AssembleConstructFrame() {
         // accessors.
         __ Push(kWasmInstanceRegister);
       }
-      if (call_descriptor->IsWasmCapiFunction()) {
+      if (call_descriptor->IsWasmImportWrapper()) {
+        // If the wrapper is running on a secondary stack, it will switch to the
+        // central stack and fill these slots with the central stack pointer and
+        // secondary stack limit. Otherwise the slots remain empty.
+#if V8_EMBEDDED_CONSTANT_POOL_BOOL
+        static_assert(WasmImportWrapperFrameConstants::kCentralStackSPOffset ==
+                      -32);
+        static_assert(
+            WasmImportWrapperFrameConstants::kSecondaryStackLimitOffset == -40);
+#else
+        static_assert(WasmImportWrapperFrameConstants::kCentralStackSPOffset ==
+                      -24);
+        static_assert(
+            WasmImportWrapperFrameConstants::kSecondaryStackLimitOffset == -32);
+#endif
+        __ mov(r0, Operand(0));
+        __ push(r0);
+        __ push(r0);
+      } else if (call_descriptor->IsWasmCapiFunction()) {
         // Reserve space for saving the PC later.
         __ addi(sp, sp, Operand(-kSystemPointerSize));
       }
@@ -3119,20 +3225,16 @@ void CodeGenerator::AssembleConstructFrame() {
       // exception unconditionally. Thereby we can avoid the integer overflow
       // check in the condition code.
       if (required_slots * kSystemPointerSize < v8_flags.stack_size * KB) {
-        Register scratch = ip;
-        __ LoadU64(
-            scratch,
-            FieldMemOperand(kWasmInstanceRegister,
-                            WasmInstanceObject::kRealStackLimitAddressOffset),
-            r0);
-        __ LoadU64(scratch, MemOperand(scratch), r0);
-        __ AddS64(scratch, scratch,
+        Register stack_limit = ip;
+        __ LoadStackLimit(stack_limit, StackLimitKind::kRealStackLimit, r0);
+        __ AddS64(stack_limit, stack_limit,
                   Operand(required_slots * kSystemPointerSize), r0);
-        __ CmpU64(sp, scratch);
+        __ CmpU64(sp, stack_limit);
         __ bge(&done);
       }
 
-      __ Call(wasm::WasmCode::kWasmStackOverflow, RelocInfo::WASM_STUB_CALL);
+      __ Call(static_cast<intptr_t>(Builtin::kWasmStackOverflow),
+              RelocInfo::WASM_STUB_CALL);
       // The call does not return, hence we can ignore any references and just
       // define an empty safepoint.
       ReferenceMap* reference_map = zone()->New<ReferenceMap>(zone());

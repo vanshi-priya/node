@@ -30,9 +30,18 @@ namespace v8::internal::compiler::turboshaft {
 template <typename P>
 struct produces_printable_graph : public std::true_type {};
 
+enum class TurboshaftPipelineKind {
+  kJS,
+  kWasm,
+  kCSA,
+};
+
+class LoopUnrollingAnalyzer;
+
 class PipelineData : public base::ContextualClass<PipelineData> {
  public:
-  explicit PipelineData(OptimizedCompilationInfo* const& info,
+  explicit PipelineData(TurboshaftPipelineKind pipeline_kind,
+                        OptimizedCompilationInfo* const& info,
                         Schedule*& schedule, Zone*& graph_zone,
                         JSHeapBroker*& broker, Isolate* const& isolate,
                         SourcePositionTable*& source_positions,
@@ -42,7 +51,8 @@ class PipelineData : public base::ContextualClass<PipelineData> {
                         size_t* address_of_max_unoptimized_frame_height,
                         size_t* address_of_max_pushed_argument_count,
                         Zone*& instruction_zone)
-      : info_(info),
+      : pipeline_kind_(pipeline_kind),
+        info_(info),
         schedule_(schedule),
         graph_zone_(graph_zone),
         broker_(broker),
@@ -62,6 +72,7 @@ class PipelineData : public base::ContextualClass<PipelineData> {
   bool has_graph() const { return graph_ != nullptr; }
   turboshaft::Graph& graph() const { return *graph_; }
 
+  TurboshaftPipelineKind pipeline_kind() const { return pipeline_kind_; }
   OptimizedCompilationInfo* info() const { return info_; }
   Schedule* schedule() const { return schedule_; }
   Zone* graph_zone() const { return graph_zone_; }
@@ -85,12 +96,17 @@ class PipelineData : public base::ContextualClass<PipelineData> {
     DCHECK(wasm_sig_ != nullptr);
     return wasm_sig_;
   }
-  void set_wasm_sig(const wasm::FunctionSig* sig) { wasm_sig_ = sig; }
+
   const wasm::WasmModule* wasm_module() const { return wasm_module_; }
-  void set_wasm_module(const wasm::WasmModule* module) {
+
+  void SetIsWasm(const wasm::WasmModule* module, const wasm::FunctionSig* sig) {
     wasm_module_ = module;
+    wasm_sig_ = sig;
+    is_wasm_ = true;
   }
 #endif
+
+  bool is_wasm() const { return is_wasm_; }
 
   void reset_schedule() { schedule_ = nullptr; }
 
@@ -107,11 +123,23 @@ class PipelineData : public base::ContextualClass<PipelineData> {
     }
   }
 
+  void set_loop_unrolling_analyzer(
+      LoopUnrollingAnalyzer* loop_unrolling_analyzer) {
+    DCHECK_NULL(loop_unrolling_analyzer_);
+    loop_unrolling_analyzer_ = loop_unrolling_analyzer;
+  }
+  void clear_loop_unrolling_analyzer() { loop_unrolling_analyzer_ = nullptr; }
+  LoopUnrollingAnalyzer* loop_unrolling_analyzer() const {
+    DCHECK_NOT_NULL(loop_unrolling_analyzer_);
+    return loop_unrolling_analyzer_;
+  }
+
  private:
   // Turbofan's PipelineData owns most of these objects. We only hold references
   // to them.
   // TODO(v8:12783, nicohartmann@): Change this once Turbofan pipeline is fully
   // replaced.
+  TurboshaftPipelineKind pipeline_kind_;
   OptimizedCompilationInfo* const& info_;
   Schedule*& schedule_;
   Zone*& graph_zone_;
@@ -131,7 +159,12 @@ class PipelineData : public base::ContextualClass<PipelineData> {
   // if we need many of them.
   const wasm::FunctionSig* wasm_sig_ = nullptr;
   const wasm::WasmModule* wasm_module_ = nullptr;
+  bool is_wasm_ = false;
+#else
+  static constexpr bool is_wasm_ = false;
 #endif
+
+  LoopUnrollingAnalyzer* loop_unrolling_analyzer_ = nullptr;
 
   std::unique_ptr<turboshaft::Graph> graph_;
 };

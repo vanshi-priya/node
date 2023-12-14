@@ -7,10 +7,59 @@
 
 #include "src/common/globals.h"
 #include "src/common/ptr-compr.h"
-#include "src/objects/objects.h"
 #include "src/objects/tagged-value.h"
 
 namespace v8::internal {
+
+// TaggedMember<T> represents an potentially compressed V8 tagged pointer, which
+// is intended to be used as a member of a V8 object class.
+//
+// TODO(leszeks): Merge with TaggedField.
+template <typename T, typename CompressionScheme = V8HeapCompressionScheme>
+class TaggedMember;
+
+// Base class for all TaggedMember<T> classes.
+// TODO(leszeks): Merge with TaggedImpl.
+using TaggedMemberBase = TaggedImpl<HeapObjectReferenceType::STRONG, Tagged_t>;
+
+template <typename T, typename CompressionScheme>
+class TaggedMember : public TaggedMemberBase {
+ public:
+  constexpr TaggedMember() = default;
+
+  inline Tagged<T> load() const;
+  inline void store(HeapObjectLayout* host, Tagged<T> value,
+                    WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+
+ private:
+  inline void store_no_write_barrier(Tagged<T> value);
+  inline void Relaxed_Store_no_write_barrier(Tagged<T> value);
+
+  static inline Address tagged_to_full(Tagged_t tagged_value);
+  static inline Tagged_t full_to_tagged(Address value);
+};
+
+static_assert(alignof(TaggedMember<Object>) == alignof(Tagged_t));
+static_assert(sizeof(TaggedMember<Object>) == sizeof(Tagged_t));
+
+class UnalignedDoubleMember {
+ public:
+  UnalignedDoubleMember() = default;
+  double value() const {
+    double ret;
+    memcpy(&ret, storage_, sizeof(double));
+    return ret;
+  }
+  void set_value(double value) { memcpy(storage_, &value, sizeof(double)); }
+  void set_value_as_bits(uint64_t value) {
+    memcpy(storage_, &value, sizeof(double));
+  }
+
+ private:
+  alignas(alignof(Tagged_t)) char storage_[sizeof(double)];
+};
+static_assert(alignof(UnalignedDoubleMember) == alignof(Tagged_t));
+static_assert(sizeof(UnalignedDoubleMember) == sizeof(double));
 
 // This helper static class represents a tagged field of type T at offset
 // kFieldOffset inside some host HeapObject.
@@ -21,24 +70,22 @@ template <typename T, int kFieldOffset = 0,
           typename CompressionScheme = V8HeapCompressionScheme>
 class TaggedField : public AllStatic {
  public:
-  static_assert(std::is_base_of<Object, T>::value ||
-                    std::is_same<MapWord, T>::value ||
+  static_assert(is_taggable_v<T> || std::is_same<MapWord, T>::value ||
                     std::is_same<MaybeObject, T>::value,
                 "T must be strong or weak tagged type or MapWord");
 
   // True for Smi fields.
-  static constexpr bool kIsSmi = std::is_base_of<Smi, T>::value;
+  static constexpr bool kIsSmi = std::is_same<Smi, T>::value;
 
   // True for HeapObject and MapWord fields. The latter may look like a Smi
   // if it contains forwarding pointer but still requires tagged pointer
   // decompression.
   static constexpr bool kIsHeapObject =
-      std::is_base_of<HeapObject, T>::value || std::is_same<MapWord, T>::value;
+      is_subtype<T, HeapObject>::value || std::is_same<MapWord, T>::value;
 
   // Object subclasses should be wrapped in Tagged<>, otherwise use T directly.
   // TODO(leszeks): Clean this up to be more uniform.
-  using PtrType =
-      std::conditional_t<std::is_base_of<Object, T>::value, Tagged<T>, T>;
+  using PtrType = std::conditional_t<is_taggable_v<T>, Tagged<T>, T>;
 
   static inline Address address(Tagged<HeapObject> host, int offset = 0);
 

@@ -154,7 +154,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   // load a literal signed int value <value> to GPR <dst>
   void LoadIntLiteral(Register dst, int value);
   // load an SMI value <value> to GPR <dst>
-  void LoadSmiLiteral(Register dst, Smi smi);
+  void LoadSmiLiteral(Register dst, Tagged<Smi> smi);
 
   void LoadPC(Register dst);
   void ComputeCodeStartAddress(Register dst);
@@ -931,6 +931,10 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void JumpIfLessThan(Register x, int32_t y, Label* dest);
 
   void LoadMap(Register destination, Register object);
+  void LoadCompressedMap(Register dst, Register object, Register scratch);
+
+  void LoadFeedbackVector(Register dst, Register closure, Register scratch,
+                          Label* fbv_undef);
 
 #if V8_TARGET_ARCH_PPC64
   inline void TestIfInt32(Register value, Register scratch,
@@ -1529,14 +1533,16 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 
   // load a literal double value <value> to FPR <result>
 
-  void AddSmiLiteral(Register dst, Register src, Smi smi, Register scratch);
-  void SubSmiLiteral(Register dst, Register src, Smi smi, Register scratch);
-  void CmpSmiLiteral(Register src1, Smi smi, Register scratch,
+  void AddSmiLiteral(Register dst, Register src, Tagged<Smi> smi,
+                     Register scratch);
+  void SubSmiLiteral(Register dst, Register src, Tagged<Smi> smi,
+                     Register scratch);
+  void CmpSmiLiteral(Register src1, Tagged<Smi> smi, Register scratch,
                      CRegister cr = cr7);
-  void CmplSmiLiteral(Register src1, Smi smi, Register scratch,
+  void CmplSmiLiteral(Register src1, Tagged<Smi> smi, Register scratch,
                       CRegister cr = cr7);
-  void AndSmiLiteral(Register dst, Register src, Smi smi, Register scratch,
-                     RCBit rc = LeaveRC);
+  void AndSmiLiteral(Register dst, Register src, Tagged<Smi> smi,
+                     Register scratch, RCBit rc = LeaveRC);
 
   // ---------------------------------------------------------------------------
   // JavaScript invokes
@@ -1587,6 +1593,31 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   // Type_reg can be no_reg. In that case ip is used.
   void CompareObjectType(Register heap_object, Register map, Register type_reg,
                          InstanceType type);
+  // Variant of the above, which only guarantees to set the correct eq/ne flag.
+  // Neither map, nor type_reg might be set to any particular value.
+  void IsObjectType(Register heap_object, Register scratch1, Register scratch2,
+                    InstanceType type);
+
+#if V8_STATIC_ROOTS_BOOL
+  // Fast variant which is guaranteed to not actually load the instance type
+  // from the map.
+  void IsObjectTypeFast(Register heap_object, Register compressed_map_scratch,
+                        InstanceType type, Register scratch);
+  void CompareInstanceTypeWithUniqueCompressedMap(Register map,
+                                                  Register scratch,
+                                                  InstanceType type);
+#endif  // V8_STATIC_ROOTS_BOOL
+
+  // Compare object type for heap object, and branch if equal (or not.)
+  // heap_object contains a non-Smi whose object type should be compared with
+  // the given type.  This both sets the flags and leaves the object type in
+  // the type_reg register. It leaves the map in the map register (unless the
+  // type_reg and map register are the same register).  It leaves the heap
+  // object in the heap_object register unless the heap_object register is the
+  // same register as one of the other registers.
+  void JumpIfObjectType(Register object, Register map, Register type_reg,
+                        InstanceType type, Label* if_cond_pass,
+                        Condition cond = eq);
 
   // Compare instance type in a map.  map contains a valid map object whose
   // object type should be compared with the given type.  This both
@@ -1604,6 +1635,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   // Compare the object in a register to a value from the root list.
   // Uses the ip register as scratch.
   void CompareRoot(Register obj, RootIndex index);
+  void CompareTaggedRoot(const Register& with, RootIndex index);
+
   void PushRoot(RootIndex index) {
     LoadRoot(r0, index);
     Push(r0);
@@ -1628,7 +1661,20 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
   void JumpIfIsInRange(Register value, unsigned lower_limit,
                        unsigned higher_limit, Label* on_in_range);
 
+  void JumpIfJSAnyIsNotPrimitive(
+      Register heap_object, Register scratch, Label* target,
+      Label::Distance distance = Label::kFar,
+      Condition condition = Condition::kUnsignedGreaterThanEqual);
+  void JumpIfJSAnyIsPrimitive(Register heap_object, Register scratch,
+                              Label* target,
+                              Label::Distance distance = Label::kFar) {
+    return JumpIfJSAnyIsNotPrimitive(heap_object, scratch, target, distance,
+                                     Condition::kUnsignedLessThan);
+  }
+
   // Tiering support.
+  void AssertFeedbackCell(Register object,
+                          Register scratch) NOOP_UNLESS_DEBUG_CODE;
   void AssertFeedbackVector(Register object,
                             Register scratch) NOOP_UNLESS_DEBUG_CODE;
   void ReplaceClosureCodeWithOptimizedCode(Register optimized_code,
@@ -1697,7 +1743,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 
   void StackOverflowCheck(Register num_args, Register scratch,
                           Label* stack_overflow);
-  void LoadStackLimit(Register destination, StackLimitKind kind);
+  void LoadStackLimit(Register destination, StackLimitKind kind,
+                      Register scratch);
 
   // ---------------------------------------------------------------------------
   // Smi utilities
@@ -1768,10 +1815,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public MacroAssemblerBase {
 
   int CalculateStackPassedWords(int num_reg_arguments,
                                 int num_double_arguments);
-  void CallCFunctionHelper(Register function, int num_reg_arguments,
-                           int num_double_arguments,
-                           SetIsolateDataSlots set_isolate_data_slots,
-                           bool has_function_descriptor);
 
   // Helper functions for generating invokes.
   void InvokePrologue(Register expected_parameter_count,

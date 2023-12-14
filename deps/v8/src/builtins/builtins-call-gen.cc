@@ -4,8 +4,8 @@
 
 #include "src/builtins/builtins-call-gen.h"
 
+#include "src/builtins/builtins-inl.h"
 #include "src/builtins/builtins-utils-gen.h"
-#include "src/builtins/builtins.h"
 #include "src/codegen/macro-assembler.h"
 #include "src/common/globals.h"
 #include "src/execution/isolate.h"
@@ -50,18 +50,17 @@ void Builtins::Generate_Call_ReceiverIsAny(MacroAssembler* masm) {
 }
 
 void Builtins::Generate_CallVarargs(MacroAssembler* masm) {
-  Generate_CallOrConstructVarargs(masm, masm->isolate()->builtins()->Call());
+  Generate_CallOrConstructVarargs(masm, Builtins::Call());
 }
 
 void Builtins::Generate_CallForwardVarargs(MacroAssembler* masm) {
   Generate_CallOrConstructForwardVarargs(masm, CallOrConstructMode::kCall,
-                                         masm->isolate()->builtins()->Call());
+                                         Builtins::Call());
 }
 
 void Builtins::Generate_CallFunctionForwardVarargs(MacroAssembler* masm) {
-  Generate_CallOrConstructForwardVarargs(
-      masm, CallOrConstructMode::kCall,
-      masm->isolate()->builtins()->CallFunction());
+  Generate_CallOrConstructForwardVarargs(masm, CallOrConstructMode::kCall,
+                                         Builtins::CallFunction());
 }
 
 void Builtins::Generate_CallApiCallbackGeneric(MacroAssembler* masm) {
@@ -312,12 +311,11 @@ void CallOrConstructBuiltinsAssembler::CallOrConstructWithArrayLike(
     BIND(&if_not_double);
     {
       if (!new_target) {
-        Callable callable = CodeFactory::CallVarargs(isolate());
-        TailCallStub(callable, context, target, args_count, length, elements);
+        TailCallBuiltin(Builtin::kCallVarargs, context, target, args_count,
+                        length, elements);
       } else {
-        Callable callable = CodeFactory::ConstructVarargs(isolate());
-        TailCallStub(callable, context, target, *new_target, args_count, length,
-                     elements);
+        TailCallBuiltin(Builtin::kConstructVarargs, context, target,
+                        *new_target, args_count, length, elements);
       }
     }
 
@@ -355,12 +353,11 @@ void CallOrConstructBuiltinsAssembler::CallOrConstructDoubleVarargs(
                          new_elements, intptr_length, intptr_length,
                          barrier_mode);
   if (!new_target) {
-    Callable callable = CodeFactory::CallVarargs(isolate());
-    TailCallStub(callable, context, target, args_count, length, new_elements);
+    TailCallBuiltin(Builtin::kCallVarargs, context, target, args_count, length,
+                    new_elements);
   } else {
-    Callable callable = CodeFactory::ConstructVarargs(isolate());
-    TailCallStub(callable, context, target, *new_target, args_count, length,
-                 new_elements);
+    TailCallBuiltin(Builtin::kConstructVarargs, context, target, *new_target,
+                    args_count, length, new_elements);
   }
 }
 
@@ -457,12 +454,11 @@ void CallOrConstructBuiltinsAssembler::CallOrConstructWithSpread(
                          length, Int32Constant(FixedArray::kMaxLength)));
 
     if (!new_target) {
-      Callable callable = CodeFactory::CallVarargs(isolate());
-      TailCallStub(callable, context, target, args_count, length, elements);
+      TailCallBuiltin(Builtin::kCallVarargs, context, target, args_count,
+                      length, elements);
     } else {
-      Callable callable = CodeFactory::ConstructVarargs(isolate());
-      TailCallStub(callable, context, target, *new_target, args_count, length,
-                   elements);
+      TailCallBuiltin(Builtin::kConstructVarargs, context, target, *new_target,
+                      args_count, length, elements);
     }
   }
 
@@ -640,8 +636,8 @@ TNode<JSReceiver> CallOrConstructBuiltinsAssembler::GetCompatibleReceiver(
       TNode<SharedFunctionInfo> template_shared =
           LoadObjectField<SharedFunctionInfo>(
               var_template.value(), JSFunction::kSharedFunctionInfoOffset);
-      TNode<Object> template_data = LoadObjectField(
-          template_shared, SharedFunctionInfo::kFunctionDataOffset);
+      TNode<Object> template_data =
+          LoadSharedFunctionInfoFunctionData(template_shared);
       GotoIf(TaggedIsSmi(template_data), &holder_next);
       var_template = CAST(template_data);
       Goto(&template_loop);
@@ -792,10 +788,9 @@ void CallOrConstructBuiltinsAssembler::CallFunctionTemplate(
   TNode<CallHandlerInfo> call_handler_info = CAST(call_code);
   switch (mode) {
     case CallFunctionTemplateMode::kGeneric:
-      TailCallStub(
-          Builtins::CallableFor(isolate(), Builtin::kCallApiCallbackGeneric),
-          context, TruncateIntPtrToInt32(args.GetLengthWithoutReceiver()),
-          call_handler_info, holder);
+      TailCallBuiltin(Builtin::kCallApiCallbackGeneric, context,
+                      TruncateIntPtrToInt32(args.GetLengthWithoutReceiver()),
+                      call_handler_info, holder);
       break;
 
     case CallFunctionTemplateMode::kCheckAccess:
@@ -805,11 +800,10 @@ void CallOrConstructBuiltinsAssembler::CallFunctionTemplate(
           LoadCallHandlerInfoJsCallbackPtr(call_handler_info);
       TNode<Object> call_data =
           LoadObjectField(call_handler_info, CallHandlerInfo::kDataOffset);
-      TailCallStub(
-          Builtins::CallableFor(isolate(), Builtin::kCallApiCallbackOptimized),
-          context, callback_address,
-          TruncateIntPtrToInt32(args.GetLengthWithoutReceiver()), call_data,
-          holder);
+      TailCallBuiltin(Builtin::kCallApiCallbackOptimized, context,
+                      callback_address,
+                      TruncateIntPtrToInt32(args.GetLengthWithoutReceiver()),
+                      call_data, holder);
       break;
     }
   }

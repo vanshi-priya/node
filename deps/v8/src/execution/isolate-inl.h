@@ -73,61 +73,41 @@ bool Isolate::has_pending_message() {
   return !IsTheHole(pending_message(), this);
 }
 
-Tagged<Object> Isolate::pending_exception() {
-  CHECK(has_pending_exception());
-  DCHECK(!IsException(thread_local_top()->pending_exception_, this));
-  return thread_local_top()->pending_exception_;
+Tagged<Object> Isolate::exception() {
+  CHECK(has_exception());
+  DCHECK(!IsException(thread_local_top()->exception_, this));
+  return thread_local_top()->exception_;
 }
 
-void Isolate::set_pending_exception(Tagged<Object> exception_obj) {
+void Isolate::set_exception(Tagged<Object> exception_obj) {
   DCHECK(!IsException(exception_obj, this));
-  thread_local_top()->pending_exception_ = exception_obj;
+  thread_local_top()->exception_ = exception_obj;
 }
 
-void Isolate::clear_pending_exception() {
-  DCHECK(!IsException(thread_local_top()->pending_exception_, this));
-  thread_local_top()->pending_exception_ = ReadOnlyRoots(this).the_hole_value();
+void Isolate::clear_internal_exception() {
+  DCHECK(!IsException(thread_local_top()->exception_, this));
+  thread_local_top()->exception_ = ReadOnlyRoots(this).the_hole_value();
 }
 
-bool Isolate::has_pending_exception() {
-  DCHECK(!IsException(thread_local_top()->pending_exception_, this));
-  return !IsTheHole(thread_local_top()->pending_exception_, this);
+void Isolate::clear_exception() {
+  clear_internal_exception();
+  if (try_catch_handler()) try_catch_handler()->Reset();
 }
 
-Tagged<Object> Isolate::scheduled_exception() {
-  DCHECK(has_scheduled_exception());
-  DCHECK(!IsException(thread_local_top()->scheduled_exception_, this));
-  return thread_local_top()->scheduled_exception_;
-}
-
-bool Isolate::has_scheduled_exception() {
-  DCHECK(!IsException(thread_local_top()->scheduled_exception_, this));
-  return thread_local_top()->scheduled_exception_ !=
-         ReadOnlyRoots(this).the_hole_value();
-}
-
-void Isolate::clear_scheduled_exception() {
-  DCHECK(!IsException(thread_local_top()->scheduled_exception_, this));
-  set_scheduled_exception(ReadOnlyRoots(this).the_hole_value());
-}
-
-void Isolate::set_scheduled_exception(Tagged<Object> exception) {
-  thread_local_top()->scheduled_exception_ = exception;
-}
-
-bool Isolate::is_execution_termination_pending() {
-  return thread_local_top()->pending_exception_ ==
-         i::ReadOnlyRoots(this).termination_exception();
+bool Isolate::has_exception() {
+  ThreadLocalTop* top = thread_local_top();
+  DCHECK(!IsException(top->exception_, this));
+  return !IsTheHole(top->exception_, this);
 }
 
 bool Isolate::is_execution_terminating() {
-  return thread_local_top()->scheduled_exception_ ==
+  return thread_local_top()->exception_ ==
          i::ReadOnlyRoots(this).termination_exception();
 }
 
 #ifdef DEBUG
 Tagged<Object> Isolate::VerifyBuiltinsResult(Tagged<Object> result) {
-  DCHECK_EQ(has_pending_exception(), result == ReadOnlyRoots(this).exception());
+  DCHECK_EQ(has_exception(), result == ReadOnlyRoots(this).exception());
 #ifdef V8_COMPRESS_POINTERS
   // Check that the returned pointer is actually part of the current isolate,
   // because that's the assumption in generated code (which might call this
@@ -142,8 +122,7 @@ Tagged<Object> Isolate::VerifyBuiltinsResult(Tagged<Object> result) {
 
 ObjectPair Isolate::VerifyBuiltinsResult(ObjectPair pair) {
 #ifdef V8_HOST_ARCH_64_BIT
-  DCHECK_EQ(has_pending_exception(),
-            pair.x == ReadOnlyRoots(this).exception().ptr());
+  DCHECK_EQ(has_exception(), pair.x == ReadOnlyRoots(this).exception().ptr());
 #ifdef V8_COMPRESS_POINTERS
   // Check that the returned pointer is actually part of the current isolate,
   // because that's the assumption in generated code (which might call this
@@ -169,13 +148,8 @@ bool Isolate::is_catchable_by_javascript(Tagged<Object> exception) {
 bool Isolate::is_catchable_by_wasm(Tagged<Object> exception) {
   if (!is_catchable_by_javascript(exception)) return false;
   if (!IsJSObject(exception)) return true;
-  // We don't allocate, but the LookupIterator interface expects a handle.
-  DisallowGarbageCollection no_gc;
-  HandleScope handle_scope(this);
-  LookupIterator it(this, handle(JSReceiver::cast(exception), this),
-                    factory()->wasm_uncatchable_symbol(),
-                    LookupIterator::OWN_SKIP_INTERCEPTOR);
-  return !JSReceiver::HasProperty(&it).FromJust();
+  return !LookupIterator::HasInternalMarkerProperty(
+      this, JSReceiver::cast(exception), factory()->wasm_uncatchable_symbol());
 }
 
 void Isolate::FireBeforeCallEnteredCallback() {
@@ -193,11 +167,12 @@ Handle<JSGlobalProxy> Isolate::global_proxy() {
 }
 
 Isolate::ExceptionScope::ExceptionScope(Isolate* isolate)
-    : isolate_(isolate),
-      pending_exception_(isolate_->pending_exception(), isolate_) {}
+    : isolate_(isolate), exception_(isolate_->exception(), isolate_) {
+  isolate_->clear_internal_exception();
+}
 
 Isolate::ExceptionScope::~ExceptionScope() {
-  isolate_->set_pending_exception(*pending_exception_);
+  isolate_->set_exception(*exception_);
 }
 
 bool Isolate::IsAnyInitialArrayPrototype(Tagged<JSArray> array) {
@@ -239,7 +214,7 @@ void Isolate::DidFinishModuleAsyncEvaluation(unsigned ordinal) {
   Handle<type> Isolate::name() {                             \
     return Handle<type>(raw_native_context()->name(), this); \
   }                                                          \
-  bool Isolate::is_##name(type value) {                      \
+  bool Isolate::is_##name(Tagged<type> value) {              \
     return raw_native_context()->is_##name(value);           \
   }
 NATIVE_CONTEXT_FIELDS(NATIVE_CONTEXT_FIELD_ACCESSOR)

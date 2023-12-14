@@ -14,6 +14,7 @@
 #include "src/objects/free-space-inl.h"
 #include "src/objects/js-array-buffer-inl.h"
 #include "src/objects/js-weak-refs-inl.h"
+#include "src/objects/literal-objects-inl.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/objects-body-descriptors-inl.h"
 #include "src/objects/objects-inl.h"
@@ -45,10 +46,12 @@ inline bool ContainsReadOnlyMap(PtrComprCageBase, Tagged<HeapObject>) {
   V(AllocationSite)                       \
   V(BigInt)                               \
   V(BytecodeArray)                        \
+  V(BytecodeWrapper)                      \
   V(ByteArray)                            \
   V(CallHandlerInfo)                      \
   V(Cell)                                 \
   V(Code)                                 \
+  V(CodeWrapper)                          \
   V(DataHandler)                          \
   V(DataObject)                           \
   V(DescriptorArray)                      \
@@ -173,7 +176,7 @@ void HeapVisitor<ResultType, ConcreteVisitor>::VisitMapPointerIfNeeded(
 #define VISIT(TypeName)                                                      \
   template <typename ResultType, typename ConcreteVisitor>                   \
   ResultType HeapVisitor<ResultType, ConcreteVisitor>::Visit##TypeName(      \
-      Map map, TypeName object) {                                            \
+      Tagged<Map> map, Tagged<TypeName> object) {                            \
     ConcreteVisitor* visitor = static_cast<ConcreteVisitor*>(this);          \
     /* If you see the following DCHECK fail, then the size computation of    \
      * BodyDescriptor doesn't match the size return via obj.Size(). This is  \
@@ -181,11 +184,13 @@ void HeapVisitor<ResultType, ConcreteVisitor>::VisitMapPointerIfNeeded(
      * reasons. The fix likely involves adding a padding field in the object \
      * defintions. */                                                        \
     DCHECK_EQ(object->SizeFromMap(map),                                      \
-              TypeName::BodyDescriptor::SizeOf(map, object));                \
+              ObjectTraits<TypeName>::BodyDescriptor::SizeOf(map, object));  \
     visitor->template VisitMapPointerIfNeeded<VisitorId::kVisit##TypeName>(  \
         object);                                                             \
-    const int size = TypeName::BodyDescriptor::SizeOf(map, object);          \
-    TypeName::BodyDescriptor::IterateBody(map, object, size, visitor);       \
+    const int size =                                                         \
+        ObjectTraits<TypeName>::BodyDescriptor::SizeOf(map, object);         \
+    ObjectTraits<TypeName>::BodyDescriptor::IterateBody(map, object, size,   \
+                                                        visitor);            \
     return static_cast<ResultType>(size);                                    \
   }
 TYPED_VISITOR_ID_LIST(VISIT)
@@ -343,7 +348,6 @@ ConcurrentHeapVisitor<ResultType, ConcreteVisitor>::VisitStringLocked(
       UNREACHABLE();
   }
   return static_cast<ResultType>(size);
-  ;
 }
 
 template <typename ConcreteVisitor>

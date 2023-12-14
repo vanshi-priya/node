@@ -23,7 +23,11 @@ extern runtime WasmFunctionTableSet(
     Context, WasmInstanceObject, Smi, Smi, Object): JSAny;
 extern runtime ThrowRangeError(Context, Smi): never;
 extern runtime ThrowWasmError(Context, Smi): never;
+extern runtime WasmThrowRangeError(Context, Smi): never;
+extern runtime TrapHandlerThrowWasmError(Context): never;
 extern runtime WasmThrowTypeError(Context, Smi, JSAny): never;
+extern runtime WasmThrowDataViewTypeError(Context, Smi, JSAny): never;
+extern runtime WasmThrowDataViewDetachedError(Context, Smi): never;
 extern runtime WasmThrow(Context, Object, FixedArray): JSAny;
 extern runtime WasmReThrow(Context, Object): JSAny;
 extern runtime WasmTriggerTierUp(Context, WasmInstanceObject): JSAny;
@@ -32,8 +36,6 @@ extern runtime ThrowWasmStackOverflow(Context): JSAny;
 extern runtime WasmTraceMemory(Context, Smi): JSAny;
 extern runtime WasmTraceEnter(Context): JSAny;
 extern runtime WasmTraceExit(Context, Smi): JSAny;
-extern runtime WasmAtomicNotify(
-    Context, WasmInstanceObject, Smi, Number, Number): Smi;
 extern runtime WasmI32AtomicWait(
     Context, WasmInstanceObject, Smi, Number, Number, BigInt): Smi;
 extern runtime WasmI64AtomicWait(
@@ -331,6 +333,14 @@ builtin WasmInternalFunctionCreateExternal(
   return runtime::WasmInternalFunctionCreateExternal(context, func);
 }
 
+builtin WasmAllocateZeroedFixedArray(size: intptr): FixedArray {
+  if (size == 0) return kEmptyFixedArray;
+  const result = UnsafeCast<FixedArray>(AllocateFixedArray(
+      ElementsKind::PACKED_ELEMENTS, size, AllocationFlag::kNone));
+  FillEntireFixedArrayWithSmiZero(ElementsKind::PACKED_ELEMENTS, result, size);
+  return result;
+}
+
 builtin WasmAllocateFixedArray(size: intptr): FixedArray {
   if (size == 0) return kEmptyFixedArray;
   return UnsafeCast<FixedArray>(AllocateFixedArray(
@@ -508,15 +518,6 @@ builtin UintPtr53ToNumber(value: uintptr): Number {
 extern builtin I64ToBigInt(intptr): BigInt;
 extern builtin I32PairToBigInt(/*low*/ intptr, /*high*/ intptr): BigInt;
 
-builtin WasmAtomicNotify(memoryIndex: int32, offset: uintptr, count: uint32):
-    uint32 {
-  const instance: WasmInstanceObject = LoadInstanceFromFrame();
-  const result: Smi = runtime::WasmAtomicNotify(
-      LoadContextFromInstance(instance), instance, SmiFromInt32(memoryIndex),
-      UintPtr53ToNumber(offset), WasmUint32ToNumber(count));
-  return Unsigned(SmiToInt32(result));
-}
-
 builtin WasmI32AtomicWait(
     memIndex: int32, offset: uintptr, expectedValue: int32,
     timeout: BigInt): uint32 {
@@ -539,7 +540,8 @@ builtin WasmI64AtomicWait(
 
 // Type feedback collection support for `call_ref`.
 
-extern macro LoadCodeInstructionStart(Code): RawPtr;
+extern macro LoadWasmInternalFunctionInstructionStart(WasmInternalFunction):
+    RawPtr;
 
 struct TargetAndInstance {
   target: RawPtr;
@@ -551,7 +553,7 @@ macro GetTargetAndInstance(funcref: WasmInternalFunction):
   const ref = funcref.ref;
   let target = funcref.call_target_ptr;
   if (Signed(target) == IntPtrConstant(0)) {
-    target = LoadCodeInstructionStart(funcref.code);
+    target = LoadWasmInternalFunctionInstructionStart(funcref);
   }
   return TargetAndInstance{target: target, instance: ref};
 }
@@ -672,6 +674,10 @@ builtin ThrowWasmTrapUnreachable(): JSAny {
   tail WasmTrap(SmiConstant(MessageTemplate::kWasmTrapUnreachable));
 }
 
+builtin WasmTrapHandlerThrowTrap(): JSAny {
+  tail runtime::TrapHandlerThrowWasmError(LoadContextFromWasmOrJsFrame());
+}
+
 builtin ThrowWasmTrapMemOutOfBounds(): JSAny {
   tail WasmTrap(SmiConstant(MessageTemplate::kWasmTrapMemOutOfBounds));
 }
@@ -735,39 +741,6 @@ builtin ThrowWasmTrapArrayTooLarge(): JSAny {
 
 builtin ThrowWasmTrapStringOffsetOutOfBounds(): JSAny {
   tail WasmTrap(SmiConstant(MessageTemplate::kWasmTrapStringOffsetOutOfBounds));
-}
-
-macro WasmTypeInfo(map: Map): WasmTypeInfo {
-  return UnsafeCast<WasmTypeInfo>(
-      map.constructor_or_back_pointer_or_native_context);
-}
-
-const kWasmI16ValueType: constexpr int32
-    generates 'wasm::ValueType::Primitive(wasm::kI16).raw_bit_field()';
-const kWasmI8ValueType: constexpr int32
-    generates 'wasm::ValueType::Primitive(wasm::kI8).raw_bit_field()';
-
-const kWasmArrayTypeRepOffset:
-    constexpr intptr generates 'wasm::ArrayType::kRepOffset';
-const kWasmValueTypeBitFieldOffset:
-    constexpr intptr generates 'wasm::ValueType::kBitFieldOffset';
-
-macro IsWord16WasmArrayMap(map: Map): bool {
-  const arrayTypePtr: RawPtr<int32> = %RawDownCast<RawPtr<int32>>(
-      WasmTypeInfo(map).native_type_ptr + kWasmArrayTypeRepOffset +
-      kWasmValueTypeBitFieldOffset);
-  const arrayTypeRef: &int32 =
-      torque_internal::unsafe::NewOffHeapReference(arrayTypePtr);
-  return *arrayTypeRef == kWasmI16ValueType;
-}
-
-macro IsWord8WasmArrayMap(map: Map): bool {
-  const arrayTypePtr: RawPtr<int32> = %RawDownCast<RawPtr<int32>>(
-      WasmTypeInfo(map).native_type_ptr + kWasmArrayTypeRepOffset +
-      kWasmValueTypeBitFieldOffset);
-  const arrayTypeRef: &int32 =
-      torque_internal::unsafe::NewOffHeapReference(arrayTypePtr);
-  return *arrayTypeRef == kWasmI8ValueType;
 }
 
 macro GetRefAt<T: type, From: type>(base: From, offset: intptr): &T {
@@ -1072,6 +1045,24 @@ builtin ThrowIndexOfCalledOnNull(): JSAny {
   const error = MessageTemplate::kCalledOnNullOrUndefined;
   const name = StringConstant('String.prototype.indexOf');
   runtime::WasmThrowTypeError(context, SmiConstant(error), name);
+}
+
+builtin ThrowDataViewTypeError(value: JSAny): JSAny {
+  const context = LoadContextFromFrame();
+  const error = MessageTemplate::kIncompatibleMethodReceiver;
+  runtime::WasmThrowDataViewTypeError(context, SmiConstant(error), value);
+}
+
+builtin ThrowDataViewDetachedError(): JSAny {
+  const context = LoadContextFromFrame();
+  const error = MessageTemplate::kDetachedOperation;
+  runtime::WasmThrowDataViewDetachedError(context, SmiConstant(error));
+}
+
+builtin ThrowDataViewOutOfBounds(): JSAny {
+  const context = LoadContextFromFrame();
+  const error = MessageTemplate::kInvalidDataViewAccessorOffset;
+  runtime::WasmThrowRangeError(context, SmiConstant(error));
 }
 
 builtin WasmStringConcat(a: String, b: String): String {
@@ -1415,7 +1406,7 @@ builtin WasmStringHash(string: String): int32 {
   return SmiToInt32(result);
 }
 
-builtin WasmExternInternalize(externObject: JSAny): JSAny {
+builtin WasmAnyConvertExtern(externObject: JSAny): JSAny {
   const instance = LoadInstanceFromFrame();
   const context = LoadContextFromInstance(instance);
 

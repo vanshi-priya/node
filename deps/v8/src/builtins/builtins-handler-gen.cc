@@ -5,7 +5,7 @@
 #include "src/base/optional.h"
 #include "src/builtins/builtins-utils-gen.h"
 #include "src/builtins/builtins.h"
-#include "src/codegen/code-stub-assembler.h"
+#include "src/codegen/code-stub-assembler-inl.h"
 #include "src/ic/ic.h"
 #include "src/ic/keyed-store-generic.h"
 #include "src/objects/objects-inl.h"
@@ -55,7 +55,7 @@ TF_BUILTIN(LoadIC_StringWrapperLength, CodeStubAssembler) {
 
 void Builtins::Generate_KeyedStoreIC_Megamorphic(
     compiler::CodeAssemblerState* state) {
-  KeyedStoreGenericGenerator::Generate(state);
+  KeyedStoreMegamorphicGenerator::Generate(state);
 }
 
 void Builtins::Generate_DefineKeyedOwnIC_Megamorphic(

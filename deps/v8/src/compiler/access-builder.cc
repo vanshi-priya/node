@@ -47,6 +47,13 @@ FieldAccess AccessBuilder::ForHeapNumberValue() {
 }
 
 // static
+FieldAccess AccessBuilder::ForHeapNumberOrOddballValue() {
+  STATIC_ASSERT_FIELD_OFFSETS_EQUAL(HeapNumber::kValueOffset,
+                                    offsetof(Oddball, to_number_raw_));
+  return ForHeapNumberValue();
+}
+
+// static
 FieldAccess AccessBuilder::ForBigIntBitfield() {
   FieldAccess access = {
       kTaggedBase,      BigInt::kBitfieldOffset,  MaybeHandle<Name>(),
@@ -204,7 +211,7 @@ FieldAccess AccessBuilder::ForJSFunctionContext() {
   return access;
 }
 
-#ifdef V8_CODE_POINTER_SANDBOXING
+#ifdef V8_ENABLE_SANDBOX
 // static
 FieldAccess AccessBuilder::ForJSFunctionCode() {
   FieldAccess access = {kTaggedBase,
@@ -215,6 +222,7 @@ FieldAccess AccessBuilder::ForJSFunctionCode() {
                         MachineType::IndirectPointer(),
                         kIndirectPointerWriteBarrier,
                         "JSFunctionCode"};
+  access.indirect_pointer_tag = kCodeIndirectPointerTag;
   return access;
 }
 #else
@@ -1109,7 +1117,7 @@ ElementAccess AccessBuilder::ForFixedArrayElement(ElementsKind kind) {
       access.machine_type = MachineType::Float64();
       break;
     case HOLEY_DOUBLE_ELEMENTS:
-      access.type = Type::NumberOrTheHole();
+      access.type = Type::NumberOrHole();
       access.write_barrier_kind = kNoWriteBarrier;
       access.machine_type = MachineType::Float64();
       break;
@@ -1429,6 +1437,20 @@ FieldAccess AccessBuilder::ForFeedbackVectorClosureFeedbackCellArray() {
       kFullWriteBarrier, "FeedbackVectorClosureFeedbackCellArray"};
   return access;
 }
+
+#if V8_ENABLE_WEBASSEMBLY
+// static
+FieldAccess AccessBuilder::ForWasmArrayLength() {
+  return {compiler::kTaggedBase,
+          WasmArray::kLengthOffset,
+          MaybeHandle<Name>(),
+          compiler::OptionalMapRef(),
+          compiler::Type::OtherInternal(),
+          MachineType::Uint32(),
+          compiler::kNoWriteBarrier,
+          "WasmArrayLength"};
+}
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 }  // namespace compiler
 }  // namespace internal

@@ -224,7 +224,7 @@ void JSObject::EnsureCanContainElements(Handle<JSObject> object,
       mode = DONT_ALLOW_DOUBLE_ELEMENTS;
     }
     ObjectSlot objects =
-        Handle<FixedArray>::cast(elements)->GetFirstElementAddress();
+        Handle<FixedArray>::cast(elements)->RawFieldOfFirstElement();
     EnsureCanContainElements(object, objects, length, mode);
     return;
   }
@@ -345,10 +345,15 @@ void JSObject::SetEmbedderField(int index, Tagged<Smi> value) {
   EmbedderDataSlot(Tagged(*this), index).store_smi(value);
 }
 
-bool JSObject::IsDroppableApiObject() const {
-  auto instance_type = map()->instance_type();
+// static
+bool JSObject::IsDroppableApiObject(const Tagged<Map> map) {
+  auto instance_type = map->instance_type();
   return InstanceTypeChecker::IsJSApiObject(instance_type) ||
          instance_type == JS_SPECIAL_API_OBJECT_TYPE;
+}
+
+bool JSObject::IsDroppableApiObject() const {
+  return IsDroppableApiObject(map());
 }
 
 // Access fast-case object properties at index. The use of these routines
@@ -594,7 +599,7 @@ void JSObject::InitializeBody(Tagged<Map> map, int start_offset,
     }
     // fill the remainder with one word filler objects (ie just a map word)
     while (offset < size) {
-      Tagged<Object> fm = Object(filler_map.ptr());
+      Tagged<Object> fm = Tagged<Object>(filler_map.ptr());
       WRITE_FIELD(*this, offset, fm);
       offset += kTaggedSize;
     }
@@ -769,7 +774,7 @@ DEF_GETTER(JSObject, HasSlowStringWrapperElements, bool) {
 }
 
 DEF_GETTER(JSObject, HasTypedArrayOrRabGsabTypedArrayElements, bool) {
-  DCHECK(!elements(cage_base)->is_null());
+  DCHECK(!elements(cage_base).is_null());
   return map(cage_base)->has_typed_array_or_rab_gsab_typed_array_elements();
 }
 
@@ -864,6 +869,23 @@ DEF_GETTER(JSReceiver, property_array, Tagged<PropertyArray>) {
     return GetReadOnlyRoots(cage_base).empty_property_array();
   }
   return PropertyArray::cast(prop);
+}
+
+base::Optional<Tagged<NativeContext>> JSReceiver::GetCreationContext() {
+  DisallowGarbageCollection no_gc;
+  Tagged<Map> meta_map = map()->map();
+  DCHECK(IsMapMap(meta_map));
+  Tagged<Object> maybe_native_context = meta_map->native_context_or_null();
+  if (IsNull(maybe_native_context)) return {};
+  DCHECK(IsNativeContext(maybe_native_context));
+  return NativeContext::cast(maybe_native_context);
+}
+
+MaybeHandle<NativeContext> JSReceiver::GetCreationContext(Isolate* isolate) {
+  DisallowGarbageCollection no_gc;
+  base::Optional<Tagged<NativeContext>> maybe_context = GetCreationContext();
+  if (!maybe_context.has_value()) return {};
+  return handle(maybe_context.value(), isolate);
 }
 
 Maybe<bool> JSReceiver::HasProperty(Isolate* isolate, Handle<JSReceiver> object,

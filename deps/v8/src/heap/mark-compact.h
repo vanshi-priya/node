@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "include/v8-internal.h"
+#include "src/base/optional.h"
 #include "src/common/globals.h"
 #include "src/heap/marking-state.h"
 #include "src/heap/marking-visitor.h"
@@ -157,7 +158,7 @@ class MarkCompactCollector final {
     ephemeron_marking_.newly_discovered.clear();
   }
 
-  bool UseBackgroundThreadsInCycle() {
+  bool UseBackgroundThreadsInCycle() const {
     return use_background_threads_in_cycle_;
   }
 
@@ -209,6 +210,9 @@ class MarkCompactCollector final {
   // Updates pointers to shared objects from client heaps.
   void UpdatePointersInClientHeaps();
   void UpdatePointersInClientHeap(Isolate* client);
+
+  // Update pointers in sandbox-related pointer tables.
+  void UpdatePointersInPointerTables();
 
   // Marks object reachable from harmony weak maps and wrapper tracing.
   void MarkTransitiveClosure();

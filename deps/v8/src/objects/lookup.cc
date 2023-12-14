@@ -32,7 +32,7 @@ PropertyKey::PropertyKey(Isolate* isolate, Handle<Object> key, bool* success) {
   }
   *success = Object::ToName(isolate, key).ToHandle(&name_);
   if (!*success) {
-    DCHECK(isolate->has_pending_exception());
+    DCHECK(isolate->has_exception());
     index_ = LookupIterator::kInvalidIndex;
     return;
   }
@@ -1349,6 +1349,33 @@ LookupIterator::State LookupIterator::LookupInRegularHolder(
   UNREACHABLE();
 }
 
+// This is a specialization of function LookupInRegularHolder above
+// which is tailored to test whether an object has an internal marker
+// property.
+// static
+bool LookupIterator::HasInternalMarkerProperty(Isolate* isolate,
+                                               Tagged<JSReceiver> const holder,
+                                               Handle<Symbol> const marker) {
+  DisallowGarbageCollection no_gc;
+  Tagged<Map> map = holder->map(isolate);
+  if (map->is_dictionary_map()) {
+    if constexpr (V8_ENABLE_SWISS_NAME_DICTIONARY_BOOL) {
+      Tagged<SwissNameDictionary> dict =
+          holder->property_dictionary_swiss(isolate);
+      InternalIndex entry = dict->FindEntry(isolate, marker);
+      return entry.is_found();
+    } else {
+      Tagged<NameDictionary> dict = holder->property_dictionary(isolate);
+      InternalIndex entry = dict->FindEntry(isolate, marker);
+      return entry.is_found();
+    }
+  } else {
+    Tagged<DescriptorArray> descriptors = map->instance_descriptors(isolate);
+    InternalIndex entry = descriptors->SearchWithCache(isolate, *marker, map);
+    return entry.is_found();
+  }
+}
+
 Handle<InterceptorInfo> LookupIterator::GetInterceptorForFailedAccessCheck()
     const {
   DCHECK_EQ(ACCESS_CHECK, state_);
@@ -1367,7 +1394,7 @@ Handle<InterceptorInfo> LookupIterator::GetInterceptorForFailedAccessCheck()
     Tagged<Object> interceptor = is_js_array_element(IsElement())
                                      ? access_check_info->indexed_interceptor()
                                      : access_check_info->named_interceptor();
-    if (interceptor != Object()) {
+    if (interceptor != Tagged<Object>()) {
       return handle(InterceptorInfo::cast(interceptor), isolate_);
     }
   }
@@ -1398,7 +1425,7 @@ bool LookupIterator::LookupCachedProperty(Handle<AccessorPair> accessor_pair) {
   DCHECK(IsAccessorPair(*GetAccessors(), isolate_));
 
   Tagged<Object> getter = accessor_pair->getter(isolate_);
-  base::Optional<Name> maybe_name =
+  base::Optional<Tagged<Name>> maybe_name =
       FunctionTemplateInfo::TryGetCachedPropertyName(isolate(), getter);
   if (!maybe_name.has_value()) return false;
 
@@ -1445,7 +1472,7 @@ base::Optional<Tagged<Object>> ConcurrentLookupIterator::TryGetOwnCowElement(
   if (index >= static_cast<size_t>(array_length)) return {};
   if (index >= static_cast<size_t>(array_elements->length())) return {};
 
-  Tagged<Object> result = array_elements->get(isolate, static_cast<int>(index));
+  Tagged<Object> result = array_elements->get(static_cast<int>(index));
 
   //  ______________________________________
   // ( Filter out holes irrespective of the )
@@ -1494,8 +1521,7 @@ ConcurrentLookupIterator::TryGetOwnConstantElement(
     if (index >= static_cast<uint32_t>(elements_fixed_array->length())) {
       return kGaveUp;
     }
-    Tagged<Object> result =
-        elements_fixed_array->get(isolate, static_cast<int>(index));
+    Tagged<Object> result = elements_fixed_array->get(static_cast<int>(index));
     if (IsHoleyElementsKindForRead(elements_kind) &&
         result == ReadOnlyRoots(isolate).the_hole_value()) {
       return kNotPresent;
@@ -1589,7 +1615,7 @@ ConcurrentLookupIterator::TryGetPropertyCell(Isolate* isolate,
     Tagged<Object> maybe_accessor_pair = cell->value(kAcquireLoad);
     if (!IsAccessorPair(maybe_accessor_pair)) return {};
 
-    base::Optional<Name> maybe_cached_property_name =
+    base::Optional<Tagged<Name>> maybe_cached_property_name =
         FunctionTemplateInfo::TryGetCachedPropertyName(
             isolate, AccessorPair::cast(maybe_accessor_pair)
                          ->getter(isolate, kAcquireLoad));
